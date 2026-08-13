@@ -117,6 +117,7 @@ export default function Home() {
   const [showReview, setShowReview] = useState(false);
   const [toast, setToast] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
+  const shellRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
     const timer = setInterval(() => setPromptIndex(value => (value + 1) % prompts.length), 2800);
@@ -149,20 +150,33 @@ export default function Home() {
   const filters = ["全部", "上衣", "下装", "鞋履", "配饰", "帽子"];
   const filtered = closetFilter === "全部" ? garments : garments.filter(item => item.type === closetFilter);
 
+  const moveLight = (event: React.PointerEvent<HTMLElement>) => {
+    const box = event.currentTarget.getBoundingClientRect();
+    event.currentTarget.style.setProperty("--mx", `${event.clientX - box.left}px`);
+    event.currentTarget.style.setProperty("--my", `${event.clientY - box.top}px`);
+    event.currentTarget.style.setProperty("--rx", `${((event.clientY / window.innerHeight) - .5) * -5}deg`);
+    event.currentTarget.style.setProperty("--ry", `${((event.clientX / window.innerWidth) - .5) * 5}deg`);
+  };
+
   return (
-    <main className="site-shell">
+    <main ref={shellRef} className={`site-shell ${loading ? "is-thinking" : ""}`} onPointerMove={moveLight}>
+      <div className="cursor-glow" aria-hidden="true" />
       <aside className="brand-panel">
+        <div className="ambient-orbit orbit-one" aria-hidden="true" /><div className="ambient-orbit orbit-two" aria-hidden="true" />
         <div className="brand-lockup"><span>DA</span><b>搭搭</b></div>
         <div className="brand-statement">
           <span className="eyebrow">YOUR CLOSET, REIMAGINED</span>
-          <h1>每天穿什么，<br />交给你的衣柜。</h1>
+          <h1><span>每天穿什么，</span><br /><span>交给你的衣柜。</span></h1>
           <p>AI 读懂天气、场合和你，只用已有衣服，搭出今天刚刚好的样子。</p>
         </div>
+        <div className="fashion-ticker" aria-hidden="true"><span>WEATHER × OCCASION × YOU&nbsp;&nbsp;✦&nbsp;&nbsp;YOUR CLOSET, REIMAGINED&nbsp;&nbsp;✦&nbsp;&nbsp;</span><span>WEATHER × OCCASION × YOU&nbsp;&nbsp;✦&nbsp;&nbsp;YOUR CLOSET, REIMAGINED&nbsp;&nbsp;✦&nbsp;&nbsp;</span></div>
         <div className="brand-foot"><span>AI OUTFIT ASSISTANT</span><span>2026 / 08</span></div>
       </aside>
 
       <section className="phone-stage">
+        <div className="stage-type stage-type-one" aria-hidden="true">STYLE</div><div className="stage-type stage-type-two" aria-hidden="true">DAILY</div>
         <div className="phone-frame">
+          <div className="phone-sheen" aria-hidden="true" />
           <div className="status-bar"><b>9:41</b><span>● ◒ ▰</span></div>
           <div className="app-scroll">
             {tab === "home" && (
@@ -194,6 +208,17 @@ export default function Home() {
                   </button>
                 </section>
 
+                {loading && (
+                  <section className="ai-thinking" aria-live="polite">
+                    <div className="scan-stage">
+                      <span className="scan-ring ring-a" /><span className="scan-ring ring-b" />
+                      <div className="scan-clothes">{garments.slice(0, 4).map(item => <GarmentArt key={item.id} color={item.color} mini />)}</div>
+                      <span className="scan-line" />
+                    </div>
+                    <div className="thinking-copy"><span>AI STYLING IN PROGRESS</span><b>正在理解天气、场合和你</b><i><em />正在检查 32 件单品</i></div>
+                  </section>
+                )}
+
                 {!showResults && !loading && (
                   <section className="closet-glance">
                     <div className="section-heading"><div><span className="micro-label">MY CLOSET</span><h3>衣柜里有 32 件衣服</h3></div><button onClick={() => setTab("wardrobe")}>去看看 →</button></div>
@@ -208,7 +233,7 @@ export default function Home() {
                     <div className="section-heading"><div><span className="micro-label">TODAY'S EDIT</span><h3>{scene}的三种打开方式</h3></div><button onClick={generateLooks}>换一批</button></div>
                     <p className="result-context">已结合体感 29°、小雨和你的直筒型身材</p>
                     <div className="outfit-list">
-                      {looks.map(look => <OutfitCard key={look.id} look={look} active={selectedLook === look.id} onClick={() => setSelectedLook(look.id)} />)}
+                      {looks.map(look => <div className={`outfit-reveal look-${look.id}`} key={look.id}><OutfitCard look={look} active={selectedLook === look.id} onClick={() => setSelectedLook(look.id)} /></div>)}
                     </div>
                     <button className="model-button" disabled={!selectedLook} onClick={() => setShowModel(true)}>
                       {selectedLook ? "在 AI 模特上看看效果" : "先选择一套喜欢的穿搭"}
@@ -293,6 +318,7 @@ export default function Home() {
         </div>
       )}
       {toast && <div className="toast"><Icon name="check" /> {toast}</div>}
+      <div className="film-grain" aria-hidden="true" />
     </main>
   );
 }
