@@ -1,0 +1,233 @@
+@import "tailwindcss";
+
+:root {
+  --ink: #24201d;
+  --muted: #817a73;
+  --paper: #f5f0e8;
+  --card: #fffdf9;
+  --accent: #e7552f;
+  --accent-dark: #ba371d;
+  --line: #ded7cd;
+  --green: #767c55;
+}
+
+* { box-sizing: border-box; }
+html { background: #211e1b; }
+body { margin: 0; color: var(--ink); font-family: "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; }
+button, textarea, input { font: inherit; }
+button { color: inherit; }
+.site-shell { min-height: 100dvh; display: grid; grid-template-columns: minmax(360px, 1fr) minmax(430px, 0.9fr); background: #292521; overflow: hidden; }
+.brand-panel { position: relative; min-height: 100dvh; padding: 54px 6vw 42px; color: #f6f0e7; display: flex; flex-direction: column; justify-content: space-between; overflow: hidden; background: radial-gradient(circle at 75% 18%, rgba(231,85,47,.22), transparent 25%), radial-gradient(circle at 15% 80%, rgba(118,124,85,.17), transparent 28%), #292521; }
+.brand-panel::before { content: "搭"; position: absolute; right: -7vw; top: 9vh; color: transparent; -webkit-text-stroke: 1px rgba(255,255,255,.08); font: 700 min(35vw, 520px)/1 serif; transform: rotate(-5deg); }
+.brand-lockup { position: relative; display: flex; align-items: center; gap: 13px; z-index: 1; }
+.brand-lockup span { display: grid; place-items: center; width: 48px; height: 48px; border-radius: 50%; background: var(--accent); font-weight: 900; font-size: 13px; letter-spacing: -1px; }
+.brand-lockup b { font-size: 24px; letter-spacing: .18em; }
+.brand-statement { position: relative; z-index: 1; max-width: 690px; margin-top: auto; margin-bottom: 8vh; }
+.eyebrow, .micro-label { font-size: 10px; letter-spacing: .18em; font-weight: 800; text-transform: uppercase; }
+.brand-statement .eyebrow { color: #ee8a6c; }
+.brand-statement h1 { margin: 24px 0 24px; font-family: "Songti SC", "STSong", serif; font-size: clamp(48px, 5.8vw, 92px); line-height: 1.08; letter-spacing: -.05em; }
+.brand-statement p { width: min(500px, 80%); color: #c9c0b6; font-size: 16px; line-height: 1.9; }
+.brand-foot { position: relative; z-index: 1; display: flex; justify-content: space-between; color: #888079; font-size: 10px; letter-spacing: .16em; border-top: 1px solid #49433d; padding-top: 18px; }
+
+.phone-stage { min-height: 100dvh; display: grid; place-items: center; padding: 28px; background: #e8ded1; background-image: linear-gradient(90deg, rgba(50,45,40,.04) 1px, transparent 1px), linear-gradient(rgba(50,45,40,.04) 1px, transparent 1px); background-size: 32px 32px; }
+.phone-frame { width: 390px; height: min(844px, calc(100dvh - 40px)); min-height: 680px; background: var(--paper); border: 8px solid #1d1b19; border-radius: 48px; position: relative; overflow: hidden; box-shadow: 0 28px 80px rgba(55,40,27,.25), inset 0 0 0 1px #000; }
+.status-bar { position: absolute; top: 0; left: 0; right: 0; height: 34px; padding: 11px 24px 0; display: flex; justify-content: space-between; font-size: 10px; z-index: 8; background: linear-gradient(var(--paper) 60%, transparent); }
+.app-scroll { height: 100%; overflow-y: auto; scrollbar-width: none; padding-bottom: 76px; }
+.app-scroll::-webkit-scrollbar { display: none; }
+.screen { min-height: 100%; padding: 48px 18px 32px; animation: screenIn .28s ease; }
+@keyframes screenIn { from { opacity: .3; transform: translateY(6px); } }
+.app-header, .sub-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
+.micro-label { color: #938a80; display: block; margin-bottom: 7px; }
+.app-header h2, .sub-header h2 { margin: 0; font-family: "Songti SC", "STSong", serif; font-size: 27px; letter-spacing: -.06em; }
+.sub-header h2 sup { font: 700 10px/1 sans-serif; color: white; background: var(--accent); padding: 3px 6px; border-radius: 10px; vertical-align: top; margin-left: 4px; }
+.avatar, .round-add { border: 0; width: 42px; height: 42px; border-radius: 50%; background: var(--ink); color: white; cursor: pointer; font-weight: 800; }
+.round-add { background: var(--accent); font-size: 24px; font-weight: 400; }
+.weather-strip { display: grid; grid-template-columns: 40px 1fr auto; gap: 10px; align-items: center; padding: 11px 12px; border: 1px solid var(--line); border-radius: 16px; background: rgba(255,255,255,.45); margin-bottom: 14px; }
+.weather-icon { width: 40px; height: 40px; display: grid; place-items: center; background: #f6dd89; border-radius: 13px; font-size: 25px; }
+.weather-strip b, .weather-strip span { display: block; }
+.weather-strip b { font-size: 12px; margin-bottom: 3px; }
+.weather-strip span { color: var(--muted); font-size: 9px; }
+.weather-strip small { color: var(--green); border: 1px solid #adb18e; padding: 5px 7px; border-radius: 20px; font-size: 9px; }
+
+.prompt-card { background: var(--accent); color: white; border-radius: 22px; padding: 17px; box-shadow: 0 14px 30px rgba(192,57,28,.22); position: relative; overflow: hidden; }
+.prompt-card::after { content: "✦"; position: absolute; right: -15px; top: 7px; color: rgba(255,255,255,.12); font-size: 100px; }
+.prompt-head { display: flex; position: relative; z-index: 1; justify-content: space-between; font-size: 10px; }
+.prompt-head span { font-weight: 800; letter-spacing: .05em; }
+.prompt-head b { background: rgba(0,0,0,.15); padding: 4px 7px; border-radius: 9px; }
+.prompt-card textarea { display: block; position: relative; z-index: 1; width: 100%; height: 72px; resize: none; border: 0; outline: 0; color: white; background: transparent; font-family: "Songti SC", "STSong", serif; font-weight: 700; font-size: 22px; line-height: 1.35; padding: 14px 0 6px; }
+.prompt-card textarea::placeholder { color: rgba(255,255,255,.92); opacity: 1; transition: .2s; }
+.scene-row { position: relative; z-index: 1; display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; padding-bottom: 13px; }
+.scene-row button { white-space: nowrap; border: 1px solid rgba(255,255,255,.32); background: transparent; color: white; padding: 6px 10px; font-size: 10px; border-radius: 20px; cursor: pointer; }
+.scene-row button.active { color: var(--accent-dark); background: white; border-color: white; font-weight: 800; }
+.generate-button { position: relative; z-index: 1; width: 100%; height: 45px; border-radius: 14px; border: 0; background: #28221e; color: white; display: flex; align-items: center; justify-content: center; gap: 10px; font-weight: 800; font-size: 12px; cursor: pointer; }
+.generate-button:disabled { opacity: .8; }
+.spinner { width: 14px; height: 14px; border: 2px solid #ffffff50; border-top-color: white; border-radius: 50%; animation: spin .7s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.closet-glance, .results-section { padding-top: 25px; }
+.section-heading { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 13px; }
+.section-heading h3 { margin: 0; font-family: "Songti SC", serif; font-size: 19px; }
+.section-heading button { border: 0; background: none; color: var(--accent); font-size: 10px; cursor: pointer; }
+.glance-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 7px; }
+.glance-grid > div { background: #eae2d8; border-radius: 13px; height: 106px; display: flex; flex-direction: column; justify-content: center; align-items: center; position: relative; }
+.glance-grid > div > span { font-size: 9px; color: #817970; position: absolute; bottom: 8px; }
+.closet-tip { display: flex; align-items: center; gap: 10px; padding: 11px; margin-top: 10px; border: 1px dashed #beb5aa; border-radius: 14px; }
+.closet-tip > span { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; background: var(--ink); color: white; }
+.closet-tip p, .closet-tip b, .closet-tip small { margin: 0; display: block; }
+.closet-tip b { font-size: 11px; margin-bottom: 2px; }
+.closet-tip small { font-size: 9px; color: var(--muted); }
+
+.result-context { color: var(--muted); font-size: 10px; margin: -5px 0 13px; }
+.outfit-list { display: grid; gap: 11px; }
+.outfit-card { width: 100%; display: grid; grid-template-columns: 1fr 1.25fr; grid-template-rows: 24px 1fr; min-height: 182px; padding: 12px; border: 1px solid var(--line); border-radius: 18px; text-align: left; background: var(--card); cursor: pointer; position: relative; overflow: hidden; }
+.outfit-card.active { border: 2px solid var(--accent); padding: 11px; box-shadow: 0 9px 25px rgba(197,70,38,.13); }
+.outfit-topline { grid-column: 1/-1; display: flex; justify-content: space-between; align-items: flex-start; }
+.outfit-topline span { font-size: 8px; color: #aaa096; letter-spacing: .14em; font-weight: 800; }
+.outfit-topline b { font: 800 18px/1 serif; color: var(--accent); }
+.outfit-topline i { font: normal 8px/1 sans-serif; }
+.outfit-board { position: relative; background: #eee7df; border-radius: 12px; display: grid; grid-template-columns: 1fr 1fr; padding: 5px; min-height: 132px; }
+.outfit-copy { padding: 17px 4px 4px 13px; }
+.outfit-copy strong { font-family: "Songti SC", serif; font-size: 17px; }
+.outfit-copy p { color: var(--muted); font-size: 10px; line-height: 1.5; min-height: 28px; }
+.tag-row { display: flex; flex-wrap: wrap; gap: 4px; }
+.tag-row span { border: 1px solid #ddd2c6; border-radius: 12px; padding: 4px 6px; color: #756c63; font-size: 8px; }
+.model-button, .review-button { width: 100%; margin-top: 13px; height: 48px; background: var(--ink); color: white; border: 0; border-radius: 15px; cursor: pointer; font-weight: 800; font-size: 12px; }
+.model-button:disabled, .review-button:disabled { background: #c7bfb5; }
+
+.garment-art { position: relative; width: 62px; height: 70px; transform: scale(.86); }
+.garment-art .garment-body { position: absolute; inset: 16px 10px 4px; border-radius: 7px 7px 10px 10px; background: currentColor; box-shadow: inset 0 -9px rgba(0,0,0,.05); }
+.garment-art .garment-neck { position: absolute; width: 22px; height: 15px; top: 8px; left: 20px; background: currentColor; border-radius: 50% 50% 20% 20%; }
+.garment-art .garment-detail { position: absolute; width: 3px; height: 41px; left: 30px; top: 20px; background: rgba(255,255,255,.22); }
+.garment-art.mini { width: 58px; height: 58px; transform: scale(.68); margin: -1px; }
+.cream { color: #e3d5bf; }.olive { color: #777a57; }.denim { color: #7692ac; }.charcoal { color: #4f514f; }.caramel { color: #a95e36; }.white { color: #faf7ef; }.wine { color: #812f34; }.black { color: #29292a; }
+.denim .garment-body, .charcoal .garment-body { clip-path: polygon(14% 0, 86% 0, 100% 100%, 58% 100%, 50% 30%, 42% 100%, 0 100%); border-radius: 5px; }
+.denim .garment-neck, .charcoal .garment-neck, .caramel .garment-neck, .white .garment-neck, .wine .garment-neck, .black .garment-neck { display: none; }
+.denim .garment-detail, .charcoal .garment-detail { top: 18px; }
+.caramel .garment-body, .white .garment-body { inset: 35px 5px 10px; border-radius: 50% 70% 20% 30%; transform: rotate(-6deg); }
+.caramel .garment-detail, .white .garment-detail { width: 43px; height: 5px; top: 50px; left: 12px; background: rgba(0,0,0,.13); }
+.wine .garment-body { inset: 23px 8px 9px; border-radius: 15px 15px 7px 7px; }
+.wine .garment-detail { width: 30px; height: 20px; left: 16px; top: 11px; background: transparent; border: 3px solid currentColor; border-bottom: 0; border-radius: 15px 15px 0 0; }
+.black .garment-body { inset: 24px 8px 15px; border-radius: 50% 50% 10px 10px; }
+.black .garment-detail { width: 28px; height: 10px; left: 30px; top: 44px; background: currentColor; border-radius: 0 100% 20% 0; transform: rotate(5deg); }
+
+.upload-zone { width: 100%; min-height: 112px; border: 1px dashed #d16c51; border-radius: 19px; background: #f9e4d9; color: var(--ink); display: flex; flex-direction: column; align-items: center; justify-content: center; cursor: pointer; }
+.upload-zone .upload-icon { color: var(--accent); font-size: 23px; margin-bottom: 5px; }
+.upload-zone b { font-size: 12px; }
+.upload-zone small { color: var(--muted); font-size: 9px; margin-top: 3px; }
+.filter-row { display: flex; gap: 7px; overflow-x: auto; scrollbar-width: none; padding: 16px 0 13px; }
+.filter-row button { white-space: nowrap; border: 1px solid var(--line); border-radius: 20px; background: transparent; padding: 7px 13px; font-size: 10px; cursor: pointer; }
+.filter-row button.active { background: var(--ink); color: white; border-color: var(--ink); }
+.wardrobe-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 11px; }
+.wardrobe-item { border: 0; background: transparent; text-align: left; padding: 0 0 6px; cursor: pointer; }
+.wardrobe-art, .uploaded-wrap { height: 142px; background: #e9e1d7; border-radius: 16px; display: grid; place-items: center; margin-bottom: 7px; overflow: hidden; position: relative; }
+.wardrobe-art .garment-art { transform: scale(1.35); }
+.wardrobe-item b, .wardrobe-item small { display: block; }
+.wardrobe-item b { font-size: 11px; margin-bottom: 3px; }
+.wardrobe-item small { color: var(--muted); font-size: 8px; }
+.uploaded-wrap img { width: 100%; height: 100%; object-fit: cover; }
+.ai-tag { position: absolute; top: 8px; right: 8px; background: var(--accent); color: white; padding: 4px 6px; border-radius: 8px; font-size: 8px; }
+
+.step-chip { color: var(--accent); border: 1px solid #eab19f; background: #fbebe5; padding: 6px 9px; border-radius: 12px; font-size: 9px; }
+.lead-copy { font-size: 11px; color: var(--muted); line-height: 1.7; margin: -7px 0 17px; }
+.canvas-card { background: #e9e1d7; border-radius: 22px; padding: 13px; min-height: 218px; }
+.canvas-label, .mini-section-title { display: flex; align-items: center; justify-content: space-between; font-size: 10px; }
+.canvas-label span { font-weight: 800; }
+.canvas-label button { border: 0; background: none; color: var(--muted); font-size: 9px; }
+.canvas-items { height: 170px; display: flex; align-items: center; justify-content: center; gap: 1px; }
+.canvas-items > p { color: #9b9288; font-size: 10px; }
+.canvas-items > button { width: 86px; height: 124px; border: 0; background: rgba(255,255,255,.45); border-radius: 14px; display: grid; place-items: center; position: relative; }
+.canvas-items > button .garment-art { transform: scale(1.05); }
+.canvas-items > button > span { position: absolute; right: 6px; top: 5px; color: #9b9288; }
+.mini-section-title { margin: 20px 0 10px; }
+.mini-section-title span { color: var(--muted); font-size: 9px; }
+.pick-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 7px; }
+.pick-grid button { height: 85px; border: 1px solid transparent; background: #ece5dc; border-radius: 13px; position: relative; display: grid; place-items: center; cursor: pointer; }
+.pick-grid button.active { border-color: var(--accent); background: #f8e5df; }
+.pick-grid button > span { position: absolute; right: 5px; top: 5px; width: 17px; height: 17px; display: grid; place-items: center; border-radius: 50%; background: var(--ink); color: white; font-size: 10px; }
+.pick-grid button.active > span { background: var(--accent); }
+.review-button { margin-top: 15px; }
+
+.edit-link { border: 0; background: none; color: var(--accent); font-size: 11px; }
+.profile-hero { padding: 17px 0 22px; display: flex; gap: 14px; align-items: center; }
+.big-avatar { width: 68px; height: 68px; display: grid; place-items: center; border-radius: 50%; background: var(--accent); color: white; font-family: serif; font-size: 28px; }
+.profile-hero h3, .profile-hero p { margin: 0; }
+.profile-hero h3 { font: 700 22px/1.5 serif; }
+.profile-hero p { font-size: 10px; color: var(--muted); }
+.body-card { display: grid; grid-template-columns: repeat(3, 1fr); background: var(--ink); color: white; border-radius: 18px; padding: 17px 8px; }
+.body-card div { text-align: center; border-right: 1px solid #ffffff22; }
+.body-card div:last-child { border: 0; }
+.body-card span, .body-card b { display: block; }
+.body-card span { font-size: 8px; color: #aaa19a; margin-bottom: 7px; }
+.body-card b { font: 700 17px/1 serif; }
+.body-card small { font: 8px/1 sans-serif; }
+.taste-card, .usage-card { background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 16px; margin-top: 13px; }
+.taste-card h3 { margin: 0 0 15px; font: 700 18px/1 serif; }
+.taste-card > div { height: 28px; background: #eee8df; border-radius: 8px; margin-top: 7px; position: relative; overflow: hidden; }
+.taste-card i { display: block; height: 100%; background: #cbd0ac; }
+.taste-card > div span { position: absolute; inset: 0; display: flex; align-items: center; padding-left: 10px; font-size: 9px; font-weight: 700; }
+.usage-card > div:first-child { display: flex; justify-content: space-between; font-size: 11px; }
+.usage-track { height: 6px; border-radius: 6px; background: #eee5da; margin: 11px 0 7px; overflow: hidden; }
+.usage-track i { display: block; width: 60%; height: 100%; background: var(--accent); }
+.usage-card small { color: var(--muted); font-size: 8px; }
+.settings-list { margin-top: 13px; border-top: 1px solid var(--line); }
+.settings-list button { width: 100%; display: flex; justify-content: space-between; border: 0; border-bottom: 1px solid var(--line); background: none; padding: 15px 2px; font-size: 10px; }
+.settings-list span { color: var(--muted); }
+
+.bottom-nav { position: absolute; z-index: 20; bottom: 0; left: 0; right: 0; height: 70px; display: grid; grid-template-columns: repeat(4, 1fr); align-items: start; padding-top: 9px; border-top: 1px solid rgba(60,52,46,.1); background: rgba(250,247,241,.95); backdrop-filter: blur(16px); }
+.bottom-nav button { border: 0; background: transparent; color: #958d84; display: flex; flex-direction: column; align-items: center; gap: 2px; cursor: pointer; }
+.bottom-nav button > span { font-size: 20px; line-height: 1; }
+.bottom-nav button small { font-size: 8px; }
+.bottom-nav button.active { color: var(--accent); font-weight: 800; }
+.bottom-nav button:nth-child(3) > span { width: 30px; height: 30px; margin-top: -5px; border-radius: 50%; display: grid; place-items: center; background: var(--ink); color: white; font-size: 21px; }
+.bottom-nav button:nth-child(3).active > span { background: var(--accent); }
+
+.modal-backdrop { position: fixed; inset: 0; z-index: 60; background: rgba(24,20,17,.75); display: grid; place-items: center; padding: 20px; backdrop-filter: blur(9px); animation: fade .2s ease; }
+@keyframes fade { from { opacity: 0; } }
+.modal { width: min(370px, 100%); max-height: 90dvh; overflow-y: auto; background: var(--paper); border-radius: 27px; position: relative; box-shadow: 0 25px 80px #0008; animation: rise .3s ease; }
+@keyframes rise { from { transform: translateY(20px) scale(.98); opacity: 0; } }
+.modal-close { position: absolute; right: 13px; top: 13px; z-index: 3; width: 31px; height: 31px; border: 0; border-radius: 50%; background: rgba(30,27,24,.8); color: white; font-size: 18px; cursor: pointer; }
+.model-visual { height: 405px; background: linear-gradient(150deg, #c7c4a4, #ede6db 64%); border-radius: 27px 27px 0 0; position: relative; overflow: hidden; display: grid; place-items: end center; }
+.model-visual::before { content: ""; position: absolute; width: 250px; height: 250px; border-radius: 50%; border: 1px solid rgba(255,255,255,.65); top: 48px; }
+.model-badge { position: absolute; top: 18px; left: 18px; background: rgba(255,255,255,.75); padding: 7px 9px; border-radius: 12px; font-size: 9px; }
+.model-silhouette { width: 150px; height: 365px; position: relative; }
+.model-head { position: absolute; left: 54px; top: 16px; width: 44px; height: 56px; background: #c38e6c; border-radius: 45% 45% 48% 48%; }
+.model-hair { position: absolute; left: 45px; top: 7px; width: 63px; height: 78px; border-radius: 55% 45% 60% 40%; background: #322721; clip-path: polygon(0 0,100% 0,90% 88%,72% 55%,50% 34%,26% 52%,12% 100%); }
+.model-top { position: absolute; left: 31px; top: 70px; width: 90px; height: 125px; background: var(--green); border-radius: 30px 30px 8px 8px; clip-path: polygon(21% 0, 79% 0, 100% 18%, 84% 39%, 78% 100%, 22% 100%, 17% 39%, 0 18%); box-shadow: inset 0 -28px rgba(0,0,0,.08); }
+.model-leg { position: absolute; top: 187px; width: 51px; height: 155px; background: #4d4f4c; clip-path: polygon(0 0,100% 0,82% 100%,25% 100%); }
+.model-leg.left { left: 26px; }.model-leg.right { right: 23px; transform: scaleX(-1); }
+.model-shoe { position: absolute; top: 329px; width: 56px; height: 24px; background: #a95e36; border-radius: 8px 22px 7px 5px; }
+.model-shoe.left { left: 18px; }.model-shoe.right { right: 10px; transform: scaleX(-1); }
+.model-copy { padding: 21px; }
+.model-copy h3, .review-modal h3 { margin: 3px 0 8px; font: 700 22px/1.25 "Songti SC", serif; }
+.model-copy p, .review-modal > p { color: var(--muted); font-size: 11px; line-height: 1.75; }
+.rating-row { display: flex; gap: 6px; }
+.rating-row span { flex: 1; background: #e8e0d5; border-radius: 10px; padding: 7px; font-size: 8px; }
+.rating-row b { display: block; font: 700 16px/1.2 serif; color: var(--accent); }
+.model-copy > button, .review-modal > button:last-child { width: 100%; border: 0; background: var(--accent); color: white; border-radius: 13px; height: 44px; margin-top: 14px; font-size: 11px; font-weight: 800; }
+.review-modal { padding: 28px 22px 22px; }
+.review-score { display: block; color: var(--accent); font: 800 50px/.95 serif; margin-bottom: 15px; }
+.review-score small { font: 10px/1 sans-serif; }
+.review-notes { background: #e9e1d7; border-radius: 15px; padding: 3px 13px; }
+.review-notes div { padding: 11px 0; border-bottom: 1px solid #d1c8bd; }
+.review-notes div:last-child { border: 0; }
+.review-notes b, .review-notes span { display: block; }
+.review-notes b { font-size: 10px; margin-bottom: 4px; }
+.review-notes span { color: var(--muted); font-size: 9px; }
+.toast { position: fixed; z-index: 100; left: 50%; bottom: 28px; transform: translateX(-50%); background: #201d1a; color: white; border-radius: 13px; padding: 12px 16px; font-size: 11px; box-shadow: 0 8px 30px #0005; }
+
+@media (max-width: 820px) {
+  .site-shell { display: block; background: var(--paper); }
+  .brand-panel { display: none; }
+  .phone-stage { padding: 0; display: block; min-height: 100dvh; background: var(--paper); }
+  .phone-frame { width: 100%; height: 100dvh; min-height: 0; border: 0; border-radius: 0; box-shadow: none; }
+  .status-bar { display: none; }
+  .screen { padding-top: 20px; }
+}
+
+@media (max-height: 760px) and (min-width: 821px) {
+  .phone-frame { transform: scale(.9); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; scroll-behavior: auto !important; }
+}
