@@ -8,7 +8,7 @@ export const metadata: Metadata = {
   openGraph: {
     title: "易搭 · AI 穿搭助手",
     description: "每天穿什么，交给你的衣柜。",
-    images: [{ url: "/yida-logo.png", width: 1050, height: 1050 }],
+    images: [{ url: "/yida-logo.png", width: 1200, height: 1200 }],
   },
 };
 
