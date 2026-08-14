@@ -97,7 +97,7 @@ export default function Home() {
 
   const mobileHome = (
     <div className="screen home-screen mobile-home">
-      <header className="app-header"><div><span className="micro-label">THURSDAY, 13 AUG</span><h2>早上好，阿禾</h2></div><button className="avatar" onClick={() => setTab("profile")}>禾</button></header>
+      <header className="app-header"><div className="mobile-brand"><img src="/yida-logo.png" alt="易搭" /><div><span className="micro-label">易搭 · THURSDAY, 13 AUG</span><h2>早上好，阿禾</h2></div></div><button className="avatar" onClick={() => setTab("profile")}>禾</button></header>
       <section className="weather-strip"><div className="weather-icon"><Icon name="sun" /></div><div><b>27° / 有小雨</b><span>天气已自动同步 · 体感闷热</span></div><small>穿薄层</small></section>
       <section className="prompt-card">
         <div className="prompt-head"><span><Icon name="spark" /> AI 穿搭灵感</span><b>今日 3 / 5 次</b></div>
@@ -117,18 +117,18 @@ export default function Home() {
       <input ref={fileRef} type="file" accept="image/*" multiple hidden onChange={event => handleUpload(event.target.files)} />
 
       <aside className="desktop-sidebar">
-        <button className="side-logo" onClick={() => setTab("home")} aria-label="搭搭首页">搭</button>
+        <button className="side-logo" onClick={() => setTab("home")} aria-label="易搭首页"><img src="/yida-logo.png" alt="易搭" /></button>
         <nav>
           <button className={tab === "home" ? "active" : ""} onClick={() => setTab("home")}><Icon name="home" /><small>今日</small></button>
           <button className={tab === "wardrobe" ? "active" : ""} onClick={() => setTab("wardrobe")}><Icon name="wardrobe" /><small>衣柜</small></button>
           <button className={tab === "create" ? "active" : ""} onClick={() => setTab("create")}><Icon name="create" /><small>搭配</small></button>
           <button onClick={() => notify("灵感画廊即将上线")}><Icon name="gallery" /><small>灵感</small></button>
         </nav>
-        <div className="sidebar-bottom"><button onClick={() => notify("有问题？告诉搭搭就好")}><Icon name="help" /><small>帮助</small></button><button className="side-avatar" onClick={() => setTab("profile")}>禾</button></div>
+        <div className="sidebar-bottom"><button onClick={() => notify("有问题？告诉易搭就好")}><Icon name="help" /><small>帮助</small></button><button className="side-avatar" onClick={() => setTab("profile")}>禾</button></div>
       </aside>
 
       <header className="desktop-topbar">
-        <button className="workspace-switch"><span>AI OUTFIT STUDIO</span><b>搭搭 · 阿禾的衣橱</b><i>⌄</i></button>
+        <button className="workspace-switch"><img src="/yida-logo.png" alt="" /><span>AI OUTFIT STUDIO</span><b>易搭 · 阿禾的衣橱</b><i>⌄</i></button>
         <div className="topbar-meta"><span className="weather-pill"><Icon name="sun" /> 杭州 27° · 小雨</span><span>今日 3 / 5 次</span><button onClick={() => setTab("profile")}>个人中心</button></div>
       </header>
 
@@ -136,7 +136,7 @@ export default function Home() {
         {tab === "home" && (
           <>
             <div className="desktop-home">
-              <div className="hero-copy"><span>YOUR CLOSET, REIMAGINED</span><h1>今天，想穿成什么样？</h1><p>说说天气、场合或心情，搭搭只用你衣柜里的单品，给你三个答案。</p></div>
+              <div className="hero-copy"><span>易搭 · YOUR CLOSET, REIMAGINED</span><h1>今天，想穿成什么样？</h1><p>说说天气、场合或心情，易搭只用你衣柜里的单品，给你三个答案。</p></div>
               <section className="studio-composer">
                 <textarea value={prompt} onChange={event => setPrompt(event.target.value)} placeholder={prompts[promptIndex]} aria-label="描述今天想要的穿搭" />
                 <div className="composer-actions"><button className="upload-button" onClick={() => fileRef.current?.click()}><Icon name="camera" /> 添加衣服 <span>⌄</span></button><div><button className="tune-button" onClick={() => notify("已使用你的身材、天气和风格偏好")}><Icon name="tune" /></button><button className="generate-button" onClick={generateLooks} disabled={loading}>{loading ? <><span className="spinner" />搭配中...</> : <><Icon name="spark" /> 生成三套穿搭</>}</button></div></div>
