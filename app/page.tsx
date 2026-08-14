@@ -101,8 +101,8 @@ export default function Home() {
       <section className="weather-strip"><div className="weather-icon"><Icon name="sun" /></div><div><b>27° / 有小雨</b><span>天气已自动同步 · 体感闷热</span></div><small>穿薄层</small></section>
       <section className="prompt-card">
         <div className="prompt-head"><span><Icon name="spark" /> AI 穿搭灵感</span><b>今日 3 / 5 次</b></div>
-        <textarea value={prompt} onChange={event => setPrompt(event.target.value)} placeholder={prompts[promptIndex]} aria-label="输入穿搭需求" />
         <div className="scene-row">{scenes.map(item => <button key={item} className={scene === item ? "active" : ""} onClick={() => setScene(item)}>{item}</button>)}</div>
+        <textarea value={prompt} onChange={event => setPrompt(event.target.value)} placeholder={prompts[promptIndex]} aria-label="输入穿搭需求" />
         <button className="generate-button" onClick={generateLooks} disabled={loading}>{loading ? <><span className="spinner" />正在翻你的衣柜...</> : <>生成今日穿搭 <Icon name="arrow" /></>}</button>
       </section>
       {!showResults && !loading && <section className="closet-glance"><div className="section-heading"><div><span className="micro-label">MY CLOSET</span><h3>衣柜里有 32 件衣服</h3></div><button onClick={() => setTab("wardrobe")}>去看看 →</button></div><div className="glance-grid">{garments.slice(0, 4).map(item => <div key={item.id}><GarmentArt color={item.color} /><span>{item.type}</span></div>)}</div></section>}
@@ -136,13 +136,13 @@ export default function Home() {
         {tab === "home" && (
           <>
             <div className="desktop-home">
-              <div className="hero-copy"><span>易搭 · YOUR CLOSET, REIMAGINED</span><h1>今天，想穿成什么样？</h1><p>说说天气、场合或心情，易搭只用你衣柜里的单品，给你三个答案。</p></div>
+              <div className="hero-copy"><span>易搭 · YOUR CLOSET, REIMAGINED</span><h1>今天，想穿成什么样？</h1><p>告诉我你的需求，易搭只用你衣柜里的单品，给你三个答案。</p></div>
+              <div className="desktop-scene-row">{scenes.map(item => <button key={item} className={scene === item ? "active" : ""} onClick={() => setScene(item)}>{item}</button>)}</div>
               <section className="studio-composer">
                 <textarea value={prompt} onChange={event => setPrompt(event.target.value)} placeholder={prompts[promptIndex]} aria-label="描述今天想要的穿搭" />
                 <div className="composer-actions"><button className="upload-button" onClick={() => fileRef.current?.click()}><Icon name="camera" /> 添加衣服 <span>⌄</span></button><div><button className="tune-button" onClick={() => notify("已使用你的身材、天气和风格偏好")}><Icon name="tune" /></button><button className="generate-button" onClick={generateLooks} disabled={loading}>{loading ? <><span className="spinner" />搭配中...</> : <><Icon name="spark" /> 生成三套穿搭</>}</button></div></div>
               </section>
               <div className="suggestion-row">{suggestions.map((item, index) => <button key={item} onClick={() => setPrompt(item)}><span>{["🧥", "🌷", "☕", "☔"][index]}</span>{item}</button>)}</div>
-              <div className="desktop-scene-row">{scenes.map(item => <button key={item} className={scene === item ? "active" : ""} onClick={() => setScene(item)}>{item}</button>)}</div>
 
               {loading && <Thinking />}
               <div className="results-anchor" />
