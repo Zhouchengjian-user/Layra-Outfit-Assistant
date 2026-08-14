@@ -136,7 +136,7 @@ export default function Home() {
         {tab === "home" && (
           <>
             <div className="desktop-home">
-              <div className="hero-copy"><span>易搭 · YOUR CLOSET, REIMAGINED</span><h1>今天，想穿成什么样？</h1><p>告诉我你的需求，易搭只用你衣柜里的单品，给你三个答案。</p></div>
+              <div className="hero-copy"><span>易搭 · YOUR CLOSET, REIMAGINED</span><h1>今天，想穿成什么样？</h1><p>告诉易搭你想怎么穿，它会从你的衣柜里挑出三套搭配方案。</p></div>
               <div className="desktop-scene-row">{scenes.map(item => <button key={item} className={scene === item ? "active" : ""} onClick={() => setScene(item)}>{item}</button>)}</div>
               <section className="studio-composer">
                 <textarea value={prompt} onChange={event => setPrompt(event.target.value)} placeholder={prompts[promptIndex]} aria-label="描述今天想要的穿搭" />
