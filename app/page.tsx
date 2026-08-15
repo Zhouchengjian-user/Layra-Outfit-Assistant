@@ -167,6 +167,7 @@ export default function Home() {
   const activeGarments = garments.filter(item => !hiddenItems.includes(item.id));
   const filters = ["全部", "上衣", "下装", "鞋履", "配饰", "帽子"];
   const filtered = (closetFilter === "全部" ? activeGarments : activeGarments.filter(item => item.type === closetFilter));
+  const cycleScope = () => setScope(scopes[(scopes.indexOf(scope) + 1) % scopes.length]);
 
   const resultsBlock = (
     <Results
@@ -181,14 +182,13 @@ export default function Home() {
     <div className="screen home-screen mobile-home">
       <header className="app-header"><div className="mobile-brand"><img src="/yida-logo.png" alt="易搭" /><div><span className="micro-label">易搭 · THURSDAY, 13 AUG</span><h2>早上好，{profile.nickname}</h2></div></div><button className="avatar" onClick={() => setTab("profile")}>{profile.nickname.slice(0, 1)}</button></header>
       <button className="weather-strip" onClick={() => setShowWeather(true)}><div className="weather-icon"><Icon name="sun" /></div><div><b>{city} 27° / 有小雨</b><span>天气已同步 · 体感闷热</span></div><small>穿薄层 ›</small></button>
-      <button className="quick-start-mobile" onClick={() => { setPrompt("用示例衣柜推荐一套适合今天的穿搭"); generateLooks(); }}><span>✦</span><div><b>还没上传衣服？先快速体验</b><small>使用示例衣柜生成今日穿搭</small></div><i>→</i></button>
       <section className="prompt-card">
         <div className="prompt-head"><span><Icon name="spark" /> AI 穿搭灵感</span><b>剩余 {generationsLeft} / 5 次</b></div>
-        <div className="scope-row">{scopes.map(item => <button key={item} className={scope === item ? "active" : ""} onClick={() => setScope(item)}>{item}</button>)}</div>
         <div className="scene-row">{scenes.map(item => <button key={item} className={scene === item ? "active" : ""} onClick={() => setScene(item)}>{item}</button>)}</div>
         <textarea value={prompt} onChange={event => setPrompt(event.target.value)} placeholder={prompts[promptIndex]} aria-label="输入穿搭需求" />
-        <button className="generate-button" onClick={generateLooks} disabled={loading}>{loading ? <><span className="spinner" />正在翻你的衣柜...</> : <>生成今日穿搭 <Icon name="arrow" /></>}</button>
+        <div className="mobile-composer-foot"><button className="mobile-mode-select" onClick={cycleScope}>{scope}⌄</button><button className="generate-button" onClick={generateLooks} disabled={loading}>{loading ? <><span className="spinner" />搭配中...</> : <>生成三套 <Icon name="arrow" /></>}</button></div>
       </section>
+      <button className="quick-start-mobile" onClick={() => { setPrompt("用示例衣柜推荐一套适合今天的穿搭"); generateLooks(); }}><span>✦</span><div><b>还没上传衣服？先快速体验</b><small>使用示例衣柜生成今日穿搭</small></div><i>→</i></button>
       {!showResults && !loading && <section className="closet-glance"><div className="section-heading"><div><span className="micro-label">MY CLOSET</span><h3>衣柜里有 {activeGarments.length + 24} 件衣服</h3></div><button onClick={() => setTab("wardrobe")}>去看看 →</button></div><div className="glance-grid">{activeGarments.slice(0, 4).map(item => <div key={item.id}><GarmentArt color={item.color} /><span>{item.type}</span></div>)}</div></section>}
       {loading && <Thinking />}
       <div className="results-anchor" />
@@ -202,34 +202,32 @@ export default function Home() {
 
       <aside className="desktop-sidebar">
         <div className="side-brand"><button className="side-logo" onClick={() => setTab("home")} aria-label="易搭首页"><img src="/yida-logo.png" alt="易搭" /></button><strong>易搭</strong><button className="collapse-side" onClick={() => notify("移动端将自动收起侧栏")}>‹</button></div>
-        <button className="preference-progress" onClick={() => setTab("profile")}><i><em style={{ transform: `rotate(${stylePrefs.length * 42}deg)` }} /></i><span><b>设置你的偏好</b><small>已完成 {stylePrefs.length} 项中的 6 项</small></span><strong>›</strong></button>
         <nav>
-          <button className={tab === "home" ? "active primary" : "primary"} onClick={() => setTab("home")}><Icon name="create" /><span>新对话</span></button>
-          <button onClick={() => setTab("profile")}><Icon name="history" /><span>搜索历史记录</span></button>
-          <button className={tab === "inspiration" ? "active" : ""} onClick={() => setTab("inspiration")}><Icon name="spark" /><span>每日精选</span></button>
-          <button onClick={() => setTab("profile")}><Icon name="profile" /><span>风格基因</span></button>
-          <button className={tab === "wardrobe" ? "active" : ""} onClick={() => setTab("wardrobe")}><Icon name="wardrobe" /><span>衣柜</span><small>新增衣物</small></button>
-          <button className={tab === "create" ? "active" : ""} onClick={() => setTab("create")}><Icon name="heart" /><span>我的搭配</span></button>
-          <button className={tab === "inspiration" ? "active" : ""} onClick={() => setTab("inspiration")}><Icon name="gallery" /><span>灵感画廊</span></button>
+          <button className={tab === "home" ? "active primary" : "primary"} onClick={() => setTab("home")}><Icon name="spark" /><span>今日推荐</span></button>
+          <button className={tab === "wardrobe" ? "active" : ""} onClick={() => setTab("wardrobe")}><Icon name="wardrobe" /><span>我的衣柜</span></button>
+          <button className={tab === "create" ? "active" : ""} onClick={() => setTab("create")}><Icon name="create" /><span>自主搭配</span></button>
+          <button className={tab === "inspiration" ? "active" : ""} onClick={() => setTab("inspiration")}><Icon name="gallery" /><span>穿搭灵感</span></button>
+          <button className={tab === "profile" ? "active" : ""} onClick={() => setTab("profile")}><Icon name="profile" /><span>我的</span></button>
         </nav>
+        <button className="preference-progress" onClick={() => setTab("profile")}><i><em /></i><span><b>完善穿搭偏好</b><small>已完成 {stylePrefs.length} / 6</small></span><strong>›</strong></button>
         <div className="sidebar-recent"><div><b>近期</b><button onClick={() => setTab("profile")}>⌃</button></div>{history.slice(0, 3).map(item => <button key={item.id} onClick={() => { setScene(item.scene as Scene); setPrompt(item.text); setTab("home"); }}><span>{item.text}</span><small>{item.date}</small></button>)}</div>
         <div className="sidebar-bottom"><button onClick={() => notify("有问题？告诉易搭就好")}><Icon name="help" /><span>帮助与反馈</span></button><button className="side-profile" onClick={() => setTab("profile")}><span className="side-avatar">{profile.nickname.slice(0, 1)}</span><b>{profile.nickname}</b><small>{generationsLeft} 次生成额度</small></button></div>
       </aside>
 
       <header className="desktop-topbar">
         <div className="topbar-title"><span>{tab === "home" ? "新对话" : tab === "wardrobe" ? "我的衣柜" : tab === "create" ? "个人搭配" : tab === "inspiration" ? "灵感画廊" : "个人中心"}</span></div>
-        <div className="topbar-meta"><button className="weather-pill" onClick={() => setShowWeather(true)}>☁ 27°　{city}</button><button className="points-pill" onClick={() => setTab("profile")}>剩余 {generationsLeft} 次生成</button><button className="top-icon" onClick={() => setTab("profile")}>□</button><button className="top-icon" onClick={() => notify("暂无新消息")}>♢</button><button className="side-avatar" onClick={() => setTab("profile")}>{profile.nickname.slice(0, 1)}</button></div>
+        <div className="topbar-meta"><button className="weather-pill" onClick={() => setShowWeather(true)}>☁ 27°　{city}</button><button className="points-pill" onClick={() => setTab("profile")}>今日剩余 {generationsLeft} 次</button><button className="side-avatar" onClick={() => setTab("profile")}>{profile.nickname.slice(0, 1)}</button></div>
       </header>
 
       <section className="studio-surface">
         {tab === "home" && <><div className="desktop-home chat-home">
-          <div className="hero-copy"><span className="mode-pill">● 衣橱模式</span><h1>晚上好，<em>{profile.nickname}</em>！今天有什么特别的安排吗？</h1><p>告诉易搭你想怎么穿，它会从你的衣柜里挑出三套搭配方案。</p></div>
+          <div className="hero-copy"><span className="mode-pill">易搭 AI 穿搭助手</span><h1>今天想怎么穿？</h1><p>选择场景，再告诉易搭你的需求。它会从衣柜里挑出三套搭配。</p></div>
           <div className="desktop-scene-row">{scenes.map(item => <button key={item} className={scene === item ? "active" : ""} onClick={() => setScene(item)}>{item}</button>)}</div>
-          <div className="suggestion-row chat-suggestions">{suggestions.map((item, index) => <button key={item} onClick={() => setPrompt(item)}><b>{["打造一套服装", "打造时尚造型", "我应该穿什么", "胶囊衣橱"][index]}</b><small>{["第一次约会", "办公室", "去参加夏季婚礼？", "旅行"][index]}</small></button>)}</div>
-          <section className="studio-composer chat-composer"><textarea value={prompt} onChange={event => setPrompt(event.target.value)} placeholder="告诉易搭你想怎么穿…" aria-label="描述今天想要的穿搭" /><div className="composer-actions"><div className="composer-left"><button className="add-round" onClick={() => fileRef.current?.click()}>＋</button><div className="composer-scope">{scopes.map(item => <button key={item} className={scope === item ? "active" : ""} onClick={() => setScope(item)}>{scope === item ? "✓ " : ""}{item}</button>)}</div></div><div><button className="chat-mode" onClick={() => notify("已进入连续对话模式")}>◯ 对话</button><button className="tune-button" onClick={() => setShowWeather(true)}>♩</button><button className="send-round" onClick={generateLooks} disabled={loading}>➤</button></div></div></section>
+          <div className="suggestion-row chat-suggestions">{suggestions.slice(0, 3).map((item, index) => <button key={item} onClick={() => setPrompt(item)}><b>{["舒服又精神", "约会温柔一点", "通勤不太正式"][index]}</b><small>{["今日推荐", "晚餐或看展", "办公室"][index]}</small></button>)}</div>
+          <section className="studio-composer chat-composer"><textarea value={prompt} onChange={event => setPrompt(event.target.value)} placeholder="例如：明天上班，想穿得舒服又有精神" aria-label="描述今天想要的穿搭" /><div className="composer-actions"><div className="composer-left"><button className="add-round" onClick={() => fileRef.current?.click()}>＋</button><button className="single-scope" onClick={cycleScope}>{scope}<span>⌄</span></button></div><button className="primary-generate" onClick={generateLooks} disabled={loading}>{loading ? "正在搭配…" : "生成 3 套搭配"}<span>→</span></button></div></section>
           {loading && <Thinking />}
           <div className="results-anchor" />
-          {showResults ? resultsBlock : <><section className="quick-start-panel"><div><span>NEW USER QUICK START</span><h3>还没有自己的衣柜？</h3><p>先用 12 件示例基础款体验完整推荐流程，之后再慢慢上传也可以。</p></div><button onClick={() => { setPrompt("用示例衣柜推荐今天的穿搭"); generateLooks(); }}>使用示例衣柜体验 →</button></section><ShortcutSection setTab={setTab} generateLooks={generateLooks} setSelectedLook={setSelectedLook} setShowModel={setShowModel} /></>}
+          {showResults ? resultsBlock : <><section className="quick-start-panel"><div><span>第一次使用</span><h3>还没有上传衣服？</h3><p>先用示例衣柜体验推荐，之后再慢慢建立自己的衣柜。</p></div><button onClick={() => { setPrompt("用示例衣柜推荐今天的穿搭"); generateLooks(); }}>快速体验 →</button></section><ShortcutSection setTab={setTab} /></>}
         </div>{mobileHome}</>}
 
         {tab === "wardrobe" && <div className="screen wardrobe-screen">
@@ -293,6 +291,11 @@ function Results({ scene, scope, selectedLook, setSelectedLook, generateLooks, s
   return <section className="results-section"><div className="section-heading"><div><span className="micro-label">TODAY&apos;S EDIT</span><h3>{scene}的三种打开方式</h3></div><button onClick={generateLooks}>换一批</button></div><p className="result-context">{scope} · 已结合体感 29°、小雨和你的直筒型身材</p><div className="outfit-list">{looks.map(look => <div className={`outfit-reveal result-card-shell look-${look.id}`} key={look.id}><OutfitCard look={look} active={selectedLook === look.id} onClick={() => setSelectedLook(look.id)} /><div className="result-actions"><button className={feedback[look.id] === "like" ? "active" : ""} onClick={() => toggleFeedback(look.id, "like")}>♡ 喜欢</button><button className={feedback[look.id] === "dislike" ? "active" : ""} onClick={() => toggleFeedback(look.id, "dislike")}>不感兴趣</button><button className={savedLooks.includes(look.id) ? "active" : ""} onClick={() => toggleSaveLook(look.id)}>{savedLooks.includes(look.id) ? "✓ 已收藏" : "收藏"}</button></div></div>)}</div><button className="model-button" disabled={!selectedLook} onClick={() => setShowModel(true)}>{selectedLook ? "在 AI 模特上看看效果" : "先选择一套喜欢的穿搭"}</button><section className="chat-assistant"><div className="chat-title"><span><Icon name="spark" /></span><div><b>继续和易搭聊</b><small>可以持续调整颜色、单品与正式程度</small></div></div><div className="chat-messages">{chatMessages.map((message, index) => <p key={`${message.role}-${index}`} className={message.role}>{message.text}</p>)}{chatTyping && <p className="assistant typing">正在想…</p>}</div><div className="chat-quick">{["换双鞋", "更正式一点", "颜色再克制些"].map(item => <button key={item} onClick={() => setChatInput(item)}>{item}</button>)}</div><div className="chat-input"><input value={chatInput} onChange={event => setChatInput(event.target.value)} onKeyDown={event => { if (event.key === "Enter") sendChat(); }} placeholder="例如：用这件外套重新搭一套" /><button onClick={sendChat}>发送</button></div></section></section>;
 }
 
-function ShortcutSection({ setTab, generateLooks, setSelectedLook, setShowModel }: { setTab: (tab: Tab) => void; generateLooks: () => void; setSelectedLook: (id: number) => void; setShowModel: (show: boolean) => void }) {
-  return <section className="shortcut-section"><div className="shortcut-heading"><div><span>STUDIO SHORTCUTS</span><h2>穿搭工作室</h2></div><p>衣柜已有 32 件单品 · 支持连续调整与收藏</p></div><div className="shortcut-grid"><button className="shortcut-card card-today" onClick={generateLooks}><div className="shortcut-art garment-collage">{garments.slice(0, 4).map(item => <GarmentArt key={item.id} color={item.color} />)}</div><span><Icon name="spark" /> 今日穿搭</span><b>让 AI 从你的衣柜里搭出今天</b><small>天气 × 场合 × 你的偏好</small></button><button className="shortcut-card card-create" onClick={() => setTab("create")}><div className="shortcut-art mini-canvas">{[1, 4, 5].map(id => <GarmentArt key={id} color={garments.find(item => item.id === id)!.color} />)}</div><span>＋ 个人搭配</span><b>你来选，AI 做轻松点评</b><small>颜色、比例、天气与场合</small></button><button className="shortcut-card card-model" onClick={() => { setSelectedLook(1); setShowModel(true); }}><div className="model-card-image"><i /><em /></div><span>♙ AI 模特</span><b>看看衣服穿上身的样子</b><small>系统模特 · 近似你的体型</small></button><button className="shortcut-card card-closet" onClick={() => setTab("wardrobe")}><div className="shortcut-art closet-collage">{garments.slice(4, 8).map(item => <GarmentArt key={item.id} color={item.color} />)}</div><span><Icon name="wardrobe" /> 我的衣柜</span><b>拍照上传，AI 自动整理</b><small>去背景 · 分类 · 识别颜色</small></button></div></section>;
+function ShortcutSection({ setTab }: { setTab: (tab: Tab) => void }) {
+  const items: Array<{ tab: Tab; icon: string; title: string; desc: string }> = [
+    { tab: "wardrobe", icon: "wardrobe", title: "整理衣柜", desc: "上传、分类和管理衣物" },
+    { tab: "create", icon: "create", title: "自主搭配", desc: "自己选衣服，让 AI 点评" },
+    { tab: "inspiration", icon: "gallery", title: "寻找灵感", desc: "浏览并复刻喜欢的风格" },
+  ];
+  return <section className="shortcut-section clean-shortcuts"><div className="shortcut-heading"><div><span>MORE TOOLS</span><h2>常用功能</h2></div></div><div className="utility-grid">{items.map(item => <button key={item.tab} onClick={() => setTab(item.tab)}><i><Icon name={item.icon} /></i><span><b>{item.title}</b><small>{item.desc}</small></span><strong>→</strong></button>)}</div></section>;
 }
