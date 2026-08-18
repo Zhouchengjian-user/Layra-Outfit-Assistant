@@ -8,7 +8,7 @@ export type ProcessedGarmentImage = {
   season: string;
   style: string;
   name: string;
-  cutoutQuality: "good" | "review";
+  cutoutQuality: "good" | "review" | "failed";
 };
 
 type GarmentDetection = {
@@ -136,16 +136,20 @@ async function analyzeGarments(file: File) {
   return payload.detections;
 }
 
-async function cutoutGarment(blob: Blob, api: GarmentDetection["recommended_api"]) {
+async function productizeGarment(blob: Blob, category: string, color: string) {
   const form = new FormData();
   form.append("image", blob, "garment.jpg");
-  form.append("api", api);
-  const response = await fetch("/api/wardrobe/cutout", { method: "POST", body: form });
+  form.append("category", category);
+  form.append("color", color);
+  const response = await fetch("/api/wardrobe/productize", { method: "POST", body: form });
   if (!response.ok) {
     const payload = await response.json().catch(() => ({})) as { error?: string };
-    throw new Error(payload.error || "单品抠图失败");
+    throw new Error(payload.error || "高清商品图生成失败");
   }
-  return response.blob();
+  return {
+    blob: await response.blob(),
+    quality: response.headers.get("X-Yida-Quality") === "good" ? "good" as const : "review" as const,
+  };
 }
 
 export async function processGarmentUpload(file: File): Promise<ProcessedGarmentImage[]> {
@@ -153,19 +157,21 @@ export async function processGarmentUpload(file: File): Promise<ProcessedGarment
   try {
     detections = await analyzeGarments(file);
   } catch {
-    return [await processGarmentImage(file)];
+    const fallback = await processGarmentImage(file);
+    return [{ ...fallback, cutoutQuality: "failed" }];
   }
 
   const results: ProcessedGarmentImage[] = [];
   for (const detection of detections) {
     const sourceBlob = await cropDetection(file, detection.bbox_2d);
     let blob = sourceBlob;
-    let cutoutQuality: ProcessedGarmentImage["cutoutQuality"] = "review";
+    let cutoutQuality: ProcessedGarmentImage["cutoutQuality"] = "failed";
     try {
-      blob = await cutoutGarment(sourceBlob, detection.recommended_api);
-      cutoutQuality = detection.partially_occluded ? "review" : "good";
+      const generated = await productizeGarment(sourceBlob, detection.category, detection.color);
+      blob = generated.blob;
+      cutoutQuality = generated.quality;
     } catch {
-      // Keep the detected crop so the user can still confirm or discard it.
+      // Keep the source crop only as a diagnostic preview. Failed items are not selected for saving.
     }
     const category = displayCategory(detection.category);
     const color = colorForName(detection.color);

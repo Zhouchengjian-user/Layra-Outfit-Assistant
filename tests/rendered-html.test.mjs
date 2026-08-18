@@ -28,12 +28,13 @@ test("server-renders the Easy Outfit product shell", async () => {
 });
 
 test("includes the phase-one wardrobe workflow and durable storage", async () => {
-  const [page, processor, api, analyzer, cutout, schema, hosting] = await Promise.all([
+  const [page, processor, api, analyzer, cutout, productizer, schema, hosting] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/lib/garment-image.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/wardrobe/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/wardrobe/analyze/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/wardrobe/cutout/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/wardrobe/productize/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
     readFile(new URL("../.openai/hosting.json", import.meta.url), "utf8"),
   ]);
@@ -49,6 +50,9 @@ test("includes the phase-one wardrobe workflow and durable storage", async () =>
   assert.match(analyzer, /mergePairs/);
   assert.match(cutout, /SegmentCloth/);
   assert.match(cutout, /SegmentCommodity/);
+  assert.match(productizer, /qwen-image-2.0/);
+  assert.match(productizer, /2048\*2048/);
+  assert.match(productizer, /validateProductImage/);
   assert.match(schema, /wardrobeItems/);
   assert.match(hosting, /"d1": "DB"/);
   assert.match(hosting, /"r2": "WARDROBE_IMAGES"/);
