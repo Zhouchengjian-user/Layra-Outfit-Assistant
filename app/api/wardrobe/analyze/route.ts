@@ -100,7 +100,8 @@ function cleanDetections(value: unknown[]) {
     const boxArea = (x2 - x1) * (y2 - y1);
     const smallAccessory = ["首饰", "其他配饰"].includes(category);
     if (confidence < (smallAccessory ? 0.86 : 0.66)) return [];
-    if (visibleRatio < (smallAccessory ? 0.62 : 0.35)) return [];
+    if (visibleRatio < (smallAccessory ? 0.62 : 0.5)) return [];
+    if (Boolean(item.partially_occluded) && visibleRatio < (smallAccessory ? 0.76 : 0.68)) return [];
     if (boxArea < (smallAccessory ? 4_500 : 10_000)) return [];
     const commodity = ["鞋子", "帽子", "包", "首饰", "其他配饰"].includes(category);
     return [{
@@ -113,6 +114,23 @@ function cleanDetections(value: unknown[]) {
       confidence,
       visible_ratio: visibleRatio,
     }];
+  });
+}
+
+function intersectionRatio(item: Detection, cover: Detection) {
+  const [x1, y1, x2, y2] = item.bbox_2d;
+  const [cx1, cy1, cx2, cy2] = cover.bbox_2d;
+  const intersection = Math.max(0, Math.min(x2, cx2) - Math.max(x1, cx1)) * Math.max(0, Math.min(y2, cy2) - Math.max(y1, cy1));
+  return intersection / Math.max(1, (x2 - x1) * (y2 - y1));
+}
+
+function removeItemsHiddenByOuterwear(items: Detection[]) {
+  const outerwear = items.filter(item => item.category === "外套");
+  if (!outerwear.length) return items;
+  return items.filter(item => {
+    if (!["上衣", "裤子", "裙子", "连衣裙"].includes(item.category)) return true;
+    const coveredRatio = Math.max(0, ...outerwear.map(cover => intersectionRatio(item, cover)));
+    return coveredRatio < 0.52;
   });
 }
 
@@ -141,6 +159,7 @@ export async function POST(request: Request) {
 3. 鞋子 bbox 包含同一双鞋，但不包含脚、袜子和裤脚；一双鞋视为一件。
 4. 花纹、盘扣、腰带扣、衣服上的装饰图案不是首饰。首饰或其他配饰只有在轮廓清楚、面积足够且能确定真实存在时才输出；不要猜耳环、戒指或项链。
 5. 同类但完全独立的衣物逐件输出；不要把上下装合成一件，也不要重复输出高度重叠的同一单品。
+6. 若某件内搭或下装被长外套遮住超过一半，只露出局部边缘、开衩或下摆，无法判断完整轮廓和版型，则不要输出该单品。宁可少识别，也绝不根据局部颜色脑补完整衣物。
 
 bbox_2d 使用 0到1000 归一化坐标，格式为 [xmin,ymin,xmax,ymax]，尽量贴合物品轮廓且保留约1%安全边距。
 confidence 为识别置信度 0到1；visible_ratio 为该单品可见完整度 0到1。看不清或 confidence 低于0.7的普通单品不要输出；首饰和其他配饰低于0.86不要输出。
@@ -169,7 +188,7 @@ confidence 为识别置信度 0到1；visible_ratio 为该单品可见完整度 
     const choices = payload.choices as Array<{ message?: { content?: string } }> | undefined;
     const content = choices?.[0]?.message?.content;
     if (!content) throw new Error("模型未返回识别结果");
-    const detections = mergePairs(cleanDetections(parseJsonContent(content)));
+    const detections = mergePairs(removeItemsHiddenByOuterwear(cleanDetections(parseJsonContent(content))));
     if (!detections.length) throw new Error("没有识别到可入柜的单品");
     return Response.json({ detections });
   } catch (error) {

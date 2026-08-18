@@ -45,7 +45,7 @@ function validationRule(category: string) {
   return "不得包含人体、其他衣物或模型虚构的无关物品";
 }
 
-async function validateProductImage(imageUrl: string, category: string) {
+async function validateProductImage(sourceImage: string, imageUrl: string, category: string, color: string) {
   try {
     const apiKey = requireServerEnv("DASHSCOPE_API_KEY");
     const baseUrl = (getServerEnv("DASHSCOPE_BASE_URL") || "https://dashscope.aliyuncs.com/compatible-mode/v1").replace(/\/$/, "");
@@ -58,8 +58,9 @@ async function validateProductImage(imageUrl: string, category: string) {
         temperature: 0,
         enable_thinking: false,
         messages: [{ role: "user", content: [
+          { type: "image_url", image_url: { url: sourceImage } },
           { type: "image_url", image_url: { url: imageUrl } },
-          { type: "text", text: `判断这是否为合格的${category}电商商品主图：画面只能有目标商品本身；${validationRule(category)}；不能有场景或杂物；商品必须完整未裁切；背景应为纯白或接近纯白；图像应清晰。只回答 PASS 或 REVIEW。` },
+          { type: "text", text: `图一是原始裁剪，可能包含人物和其他衣物；图二是根据图一生成的商品图。目标是${color}${category}。只有同时满足以下条件才回答 PASS：目标单品在图一中足够完整、可以可靠还原；图二与图一目标单品的类别、主色、长度、轮廓、版型和图案一致；图二只能有目标商品本身；${validationRule(category)}；不能有场景或杂物；商品完整未裁切；背景纯白或接近纯白；图像清晰。如果图一中的目标被外套或人体遮住大半、无法判断完整结构，或者图二混入了其他衣服的颜色和结构，必须回答 REVIEW。只回答 PASS 或 REVIEW。` },
         ] }],
         max_tokens: 3,
       }),
@@ -116,7 +117,7 @@ export async function POST(request: Request) {
       throw new Error(payload.message || payload.code || "高清商品图生成失败");
     }
 
-    const quality = await validateProductImage(generatedUrl, category);
+    const quality = await validateProductImage(imageData, generatedUrl, category, color);
     const generated = await fetch(generatedUrl, { signal: AbortSignal.timeout(60_000) });
     if (!generated.ok) throw new Error("高清商品图下载失败");
     return new Response(await generated.arrayBuffer(), {

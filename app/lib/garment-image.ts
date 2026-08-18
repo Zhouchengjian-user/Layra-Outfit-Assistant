@@ -73,6 +73,7 @@ function canvasToJpegBlob(canvas: HTMLCanvasElement, quality = 0.9) {
 }
 
 function displayCategory(category: string) {
+  if (category === "外套") return "外套";
   if (["裤子", "裙子"].includes(category)) return "下装";
   if (category === "连衣裙") return "连衣裙";
   if (category === "鞋子") return "鞋履";

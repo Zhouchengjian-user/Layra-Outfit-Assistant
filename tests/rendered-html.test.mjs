@@ -48,11 +48,13 @@ test("includes the phase-one wardrobe workflow and durable storage", async () =>
   assert.match(api, /CREATE TABLE IF NOT EXISTS wardrobe_items/);
   assert.match(analyzer, /qwen3-vl-flash/);
   assert.match(analyzer, /mergePairs/);
+  assert.match(analyzer, /removeItemsHiddenByOuterwear/);
   assert.match(cutout, /SegmentCloth/);
   assert.match(cutout, /SegmentCommodity/);
   assert.match(productizer, /qwen-image-2.0/);
   assert.match(productizer, /1536\*1536/);
   assert.match(productizer, /validateProductImage/);
+  assert.match(productizer, /图一是原始裁剪/);
   assert.match(processor, /mapWithConcurrency\(detections, 2/);
   assert.match(page, /点击整张卡片即可切换是否加入衣柜/);
   assert.match(schema, /wardrobeItems/);
