@@ -70,6 +70,10 @@ test("includes the phase-one wardrobe workflow and durable storage", async () =>
   assert.match(page, /AI搭配标签/);
   assert.match(page, /删除失败，衣物已恢复/);
   assert.match(page, /Math\.min\(4, selected\.length\)/);
+  assert.match(page, /uploadBatchRef/);
+  assert.match(page, /uploadBatchRef\.current !== batchId/);
+  assert.match(page, /openUploadPicker\("replace"\)/);
+  assert.match(page, /openUploadPicker\("append"\)/);
   assert.match(api, /schemaReady/);
   assert.match(processor, /mapWithConcurrency\(detections, 2/);
   assert.match(page, /点击整张卡片即可切换是否加入衣柜/);

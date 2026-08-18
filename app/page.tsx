@@ -116,6 +116,8 @@ export default function Home() {
   const [history, setHistory] = useState([{ id: 1, scene: "约会", text: "温柔一点但不要太甜", date: "昨天" }, { id: 2, scene: "通勤", text: "舒服又显比例", date: "8月13日" }]);
   const [planned, setPlanned] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  const uploadModeRef = useRef<"replace" | "append">("replace");
+  const uploadBatchRef = useRef(0);
 
   useEffect(() => {
     const timer = setInterval(() => setPromptIndex(value => (value + 1) % prompts.length), 2800);
@@ -137,6 +139,11 @@ export default function Home() {
 
   const notify = (message: string) => { setToast(message); window.setTimeout(() => setToast(""), 2200); };
 
+  const openUploadPicker = (mode: "replace" | "append" = "replace") => {
+    uploadModeRef.current = mode;
+    fileRef.current?.click();
+  };
+
   const generateLooks = () => {
     if (generationsLeft <= 0) { notify("今天的生成次数已用完，明天 00:00 恢复"); return; }
     setLoading(true); setShowResults(false);
@@ -151,22 +158,35 @@ export default function Home() {
   const handleUpload = async (files: FileList | null) => {
     if (!files?.length) return;
     const selected = Array.from(files).filter(file => file.type.startsWith("image/")).slice(0, 5);
+    if (!selected.length) return;
+    const mode = uploadModeRef.current;
+    uploadModeRef.current = "replace";
+    const batchId = ++uploadBatchRef.current;
     setTab("wardrobe");
     setUploadOpen(true);
     setUploadProcessing(true);
     setUploadProgress(0);
     setUploadTotal(selected.length);
-    if (!uploadOpen) setGarmentDrafts([]);
+    if (mode === "replace") {
+      setGarmentDrafts(current => {
+        current.forEach(item => { URL.revokeObjectURL(item.previewUrl); URL.revokeObjectURL(item.originalUrl); });
+        return [];
+      });
+    }
     try {
       for (let index = 0; index < selected.length; index++) {
         const processedItems = await processGarmentUpload(selected[index]);
+        if (uploadBatchRef.current !== batchId) {
+          processedItems.forEach(item => { URL.revokeObjectURL(item.previewUrl); URL.revokeObjectURL(item.originalUrl); });
+          return;
+        }
         setGarmentDrafts(current => [...current, ...processedItems.map(processed => ({ ...processed, id: crypto.randomUUID(), selected: processed.cutoutQuality === "good" }))]);
         setUploadProgress(index + 1);
       }
     } catch {
-      notify("有一张图片处理失败，请换一张清晰照片再试");
+      if (uploadBatchRef.current === batchId) notify("有一张图片处理失败，请换一张清晰照片再试");
     } finally {
-      setUploadProcessing(false);
+      if (uploadBatchRef.current === batchId) setUploadProcessing(false);
       if (fileRef.current) fileRef.current.value = "";
     }
   };
@@ -176,8 +196,10 @@ export default function Home() {
   };
 
   const closeUpload = () => {
+    uploadBatchRef.current += 1;
     garmentDrafts.forEach(item => { URL.revokeObjectURL(item.previewUrl); URL.revokeObjectURL(item.originalUrl); });
     setGarmentDrafts([]);
+    setUploadProcessing(false);
     setUploadOpen(false);
   };
 
@@ -344,20 +366,20 @@ export default function Home() {
           <div className="hero-copy"><span className="mode-pill">易搭 AI 穿搭助手</span><h1>今天想怎么穿？</h1><p>选择场景，再告诉易搭你的需求。它会从衣柜里挑出三套搭配。</p></div>
           <div className="desktop-scene-row">{scenes.map(item => <button key={item} className={scene === item ? "active" : ""} onClick={() => setScene(item)}>{item}</button>)}</div>
           <div className="suggestion-row chat-suggestions">{suggestions.slice(0, 3).map((item, index) => <button key={item} onClick={() => setPrompt(item)}><b>{["舒服又精神", "约会温柔一点", "通勤不太正式"][index]}</b><small>{["今日推荐", "晚餐或看展", "办公室"][index]}</small></button>)}</div>
-          <section className="studio-composer chat-composer"><textarea value={prompt} onChange={event => setPrompt(event.target.value)} placeholder="例如：明天上班，想穿得舒服又有精神" aria-label="描述今天想要的穿搭" /><div className="composer-actions"><div className="composer-left"><button className="add-round" onClick={() => fileRef.current?.click()}>＋</button><button className="single-scope" onClick={cycleScope}>{scope}<span>⌄</span></button></div><button className="primary-generate" onClick={generateLooks} disabled={loading}>{loading ? "正在搭配…" : "生成 3 套搭配"}<span>→</span></button></div></section>
+          <section className="studio-composer chat-composer"><textarea value={prompt} onChange={event => setPrompt(event.target.value)} placeholder="例如：明天上班，想穿得舒服又有精神" aria-label="描述今天想要的穿搭" /><div className="composer-actions"><div className="composer-left"><button className="add-round" onClick={() => openUploadPicker("replace")}>＋</button><button className="single-scope" onClick={cycleScope}>{scope}<span>⌄</span></button></div><button className="primary-generate" onClick={generateLooks} disabled={loading}>{loading ? "正在搭配…" : "生成 3 套搭配"}<span>→</span></button></div></section>
           {loading && <Thinking />}
           <div className="results-anchor" />
           {showResults ? resultsBlock : <><section className="quick-start-panel"><div><span>第一次使用</span><h3>还没有上传衣服？</h3><p>先用示例衣柜体验推荐，之后再慢慢建立自己的衣柜。</p></div><button onClick={() => { setPrompt("用示例衣柜推荐今天的穿搭"); generateLooks(); }}>快速体验 →</button></section><ShortcutSection setTab={setTab} /></>}
         </div>{mobileHome}</>}
 
         {tab === "wardrobe" && <div className="screen wardrobe-screen">
-          <header className="sub-header"><div><span className="micro-label">MY CLOSET</span><h2>我的衣柜 <sup>{wardrobeItems.length}</sup></h2><p>把真实衣服整理好，之后的搭配才会真正属于你。</p></div><button className="round-add" onClick={() => fileRef.current?.click()} aria-label="上传衣物">+</button></header>
+          <header className="sub-header"><div><span className="micro-label">MY CLOSET</span><h2>我的衣柜 <sup>{wardrobeItems.length}</sup></h2><p>把真实衣服整理好，之后的搭配才会真正属于你。</p></div><button className="round-add" onClick={() => openUploadPicker("replace")} aria-label="上传衣物">+</button></header>
           <div className="closet-status"><span><b>{wardrobeItems.filter(item => item.status === "available").length}</b> 件可穿</span><span><b>{wardrobeItems.filter(item => item.status === "washing").length}</b> 件清洗中</span><span><b>{new Set(wardrobeItems.flatMap(item => garmentTagLabels(item.aiTags))).size}</b> 个AI搭配标签</span></div>
-          <button className="upload-zone" onClick={() => fileRef.current?.click()}><span className="upload-icon"><Icon name="camera" /></span><span><b>拍照或从相册上传衣物</b><small>自动逐件识别、抠图与整理标签，确认后加入衣柜</small><em>一张图可包含多件单品 · 单次最多 5 张</em></span><strong>开始上传 →</strong></button>
+          <button className="upload-zone" onClick={() => openUploadPicker("replace")}><span className="upload-icon"><Icon name="camera" /></span><span><b>拍照或从相册上传衣物</b><small>自动逐件识别、抠图与整理标签，确认后加入衣柜</small><em>一张图可包含多件单品 · 单次最多 5 张</em></span><strong>开始上传 →</strong></button>
           <div className="wardrobe-toolbar"><div className="filter-row">{filters.map(filter => <button key={filter} className={closetFilter === filter ? "active" : ""} onClick={() => setClosetFilter(filter)}>{filter}</button>)}</div><span>{closetFilter === "全部" ? "全部单品" : closetFilter} · {filteredWardrobe.length}</span></div>
           {wardrobeLoading ? <div className="wardrobe-loading"><span className="spinner" /> 正在同步衣柜…</div> : filteredWardrobe.length ? <div className="wardrobe-grid saved-wardrobe-grid">
             {filteredWardrobe.map(item => <article className={`wardrobe-item saved-garment ${item.status === "washing" ? "is-washing" : ""}`} key={item.id}><div className="uploaded-wrap product-white"><img src={item.imageUrl} alt={item.name} loading="lazy" /><span className="ai-tag">{item.status === "washing" ? "清洗中" : "已入柜"}</span><i className="garment-color-dot" style={{ background: item.colorHex }} /></div><b>{item.name}</b><small>{item.colorName} · {item.category} · {item.season}</small><div className="wardrobe-ai-tags">{garmentTagLabels(item.aiTags).slice(0, 5).map(tag => <span key={tag}>{tag}</span>)}<span>正式 {item.aiTags.formality}/5</span><span>保暖 {item.aiTags.warmth}/5</span></div><div className="wardrobe-actions"><button onClick={() => setEditingWardrobe(item)}>编辑</button><button onClick={() => updateWardrobeItem(item.id, { status: item.status === "washing" ? "available" : "washing" })}>{item.status === "washing" ? "恢复可穿" : "标记清洗"}</button><button onClick={() => deleteWardrobeItem(item)}>删除</button></div></article>)}
-          </div> : <section className="wardrobe-empty"><div><span>＋</span></div><h3>{closetFilter === "全部" ? "衣柜还是空的" : `还没有${closetFilter}`}</h3><p>{closetFilter === "全部" ? "先上传一件常穿的衣服。易搭会自动抠掉背景、识别标签，你只需要确认一下。" : "可以切换到全部，或上传一件新的单品。"}</p><button onClick={() => fileRef.current?.click()}>上传第一件衣服</button></section>}
+          </div> : <section className="wardrobe-empty"><div><span>＋</span></div><h3>{closetFilter === "全部" ? "衣柜还是空的" : `还没有${closetFilter}`}</h3><p>{closetFilter === "全部" ? "先上传一件常穿的衣服。易搭会自动抠掉背景、识别标签，你只需要确认一下。" : "可以切换到全部，或上传一件新的单品。"}</p><button onClick={() => openUploadPicker("replace")}>上传第一件衣服</button></section>}
           <section className="photo-guide"><span className="micro-label">拍得好，抠得更干净</span><div><p><b>01</b> 衣服平铺或挂直</p><p><b>02</b> 背景干净、颜色有反差</p><p><b>03</b> 光线均匀，避免明显阴影</p></div></section>
         </div>}
 
@@ -392,14 +414,14 @@ export default function Home() {
       {uploadOpen && <div className="modal-backdrop upload-backdrop" onClick={() => { if (!uploadProcessing && !uploadSaving) closeUpload(); }}><section className="modal upload-modal" onClick={event => event.stopPropagation()}><button className="modal-close" disabled={uploadSaving} onClick={closeUpload}>×</button><header className="upload-modal-head"><span className="micro-label">SMART WARDROBE IMPORT</span><h3>{uploadProcessing ? "易搭正在生成高清商品图" : "确认后加入衣柜"}</h3><p>{uploadProcessing ? `正在识别、去除人物并生成高清白底图 ${uploadProgress} / ${Math.max(uploadTotal, 1)} 张` : `已整理 ${garmentDrafts.length} 件单品；点击整张卡片即可切换是否加入衣柜`}</p></header>
         {uploadProcessing && <div className="cutout-progress"><div className="cutout-animation"><span /><i /><b>单品处理中</b></div><p>原图仅用于识别与抠图，只有你确认的白底单品图会加入衣柜。</p></div>}
         {!!garmentDrafts.length && <div className="draft-grid">{garmentDrafts.map(draft => <article className={`garment-draft ${draft.selected ? "selected" : ""} quality-${draft.cutoutQuality}`} key={draft.id} aria-label={`${draft.name}，${draft.selected ? "已选择加入衣柜" : "未选择"}`} onClick={event => { if (draft.cutoutQuality === "failed" || (event.target as HTMLElement).closest("input, select, label")) return; updateGarmentDraft(draft.id, { selected: !draft.selected }); }}><span className="draft-state">{draft.cutoutQuality === "failed" ? "生成失败" : draft.selected ? "✓ 已选择" : "点击选择"}</span><div className="draft-preview product-white"><img src={draft.previewUrl} alt={draft.name} />{draft.cutoutQuality === "review" && <span>原图信息不足，请谨慎确认</span>}{draft.cutoutQuality === "failed" && <span>这是原图裁剪，不会入柜</span>}</div><label>衣物名称<input value={draft.name} onChange={event => updateGarmentDraft(draft.id, { name: event.target.value })} /></label><div className="draft-fields"><label>分类<select value={draft.category} onChange={event => updateGarmentDraft(draft.id, { category: event.target.value })}>{["上衣", "外套", "下装", "连衣裙", "鞋履", "配饰", "帽子"].map(value => <option key={value}>{value}</option>)}</select></label><label>季节<select value={draft.season} onChange={event => updateGarmentDraft(draft.id, { season: event.target.value })}>{["四季", "春秋", "夏季", "冬季"].map(value => <option key={value}>{value}</option>)}</select></label></div><div className="recognized-tags"><span><i style={{ background: draft.colorHex }} />{draft.colorName}</span>{garmentTagLabels(draft.aiTags).slice(0, 4).map(tag => <span key={tag}>{tag}</span>)}<span>正式 {draft.aiTags.formality}/5</span><span>保暖 {draft.aiTags.warmth}/5</span><span>{draft.cutoutQuality === "good" ? "高清商品图" : draft.cutoutQuality === "review" ? "待人工确认" : "未生成商品图"}</span></div></article>)}</div>}
-        {!uploadProcessing && <footer className="upload-modal-foot"><button className="secondary-upload" onClick={() => fileRef.current?.click()}>＋ 继续添加</button><button className="primary-upload" disabled={uploadSaving || !garmentDrafts.some(item => item.selected)} onClick={saveGarmentDrafts}>{uploadSaving ? "正在加入衣柜…" : `加入衣柜（${garmentDrafts.filter(item => item.selected).length}）`}</button></footer>}
+        {!uploadProcessing && <footer className="upload-modal-foot"><button className="secondary-upload" onClick={() => openUploadPicker("append")}>＋ 继续添加</button><button className="primary-upload" disabled={uploadSaving || !garmentDrafts.some(item => item.selected)} onClick={saveGarmentDrafts}>{uploadSaving ? "正在加入衣柜…" : `加入衣柜（${garmentDrafts.filter(item => item.selected).length}）`}</button></footer>}
       </section></div>}
 
       {editingWardrobe && <div className="modal-backdrop" onClick={() => setEditingWardrobe(null)}><section className="modal compact-modal wardrobe-edit-modal" onClick={event => event.stopPropagation()}><button className="modal-close" onClick={() => setEditingWardrobe(null)}>×</button><span className="micro-label">EDIT GARMENT</span><h3>修改衣物信息</h3><div className="edit-garment-preview transparent-grid"><img src={editingWardrobe.imageUrl} alt={editingWardrobe.name} /></div><div className="profile-form"><label>衣物名称<input value={editingWardrobe.name} onChange={event => setEditingWardrobe({ ...editingWardrobe, name: event.target.value })} /></label><label>分类<select value={editingWardrobe.category} onChange={event => setEditingWardrobe({ ...editingWardrobe, category: event.target.value })}>{["上衣", "外套", "下装", "连衣裙", "鞋履", "配饰", "帽子"].map(value => <option key={value}>{value}</option>)}</select></label><label>颜色<input value={editingWardrobe.colorName} onChange={event => setEditingWardrobe({ ...editingWardrobe, colorName: event.target.value })} /></label><label>季节<select value={editingWardrobe.season} onChange={event => setEditingWardrobe({ ...editingWardrobe, season: event.target.value })}>{["四季", "春秋", "夏季", "冬季"].map(value => <option key={value}>{value}</option>)}</select></label><label>风格<select value={editingWardrobe.style} onChange={event => setEditingWardrobe({ ...editingWardrobe, style: event.target.value })}>{["简约", "通勤", "休闲", "运动", "复古", "甜酷"].map(value => <option key={value}>{value}</option>)}</select></label></div><div className="edit-ai-tags-wrap"><span className="micro-label">AI MATCHING TAGS</span><div className="edit-ai-tags">{garmentTagLabels(editingWardrobe.aiTags).map(tag => <span key={tag}>{tag}</span>)}<span>正式度 {editingWardrobe.aiTags.formality}/5</span><span>保暖度 {editingWardrobe.aiTags.warmth}/5</span></div><small>用于天气、场合、层次与风格筛选，后续由搭配模型综合评分。</small></div><button className="primary-modal-button" onClick={() => updateWardrobeItem(editingWardrobe.id, editingWardrobe)}>保存修改</button></section></div>}
 
       {showWeather && <div className="modal-backdrop" onClick={() => setShowWeather(false)}><section className="modal compact-modal" onClick={event => event.stopPropagation()}><button className="modal-close" onClick={() => setShowWeather(false)}>×</button><span className="micro-label">WEATHER & LOCATION</span><h3>天气与城市</h3><p>允许定位后会自动获取当前位置；拒绝定位时使用常驻城市。</p><button className="location-button" onClick={() => { setCity("杭州"); notify("已获取当前位置：杭州"); setShowWeather(false); }}>⌖ 允许定位并获取天气</button><div className="city-grid">{["杭州", "上海", "北京", "广州", "深圳", "成都"].map(item => <button key={item} className={city === item ? "active" : ""} onClick={() => { setCity(item); setShowWeather(false); notify(`常驻城市已设为${item}`); }}>{item}</button>)}</div></section></div>}
 
-      {showProfileEdit && <div className="modal-backdrop" onClick={() => setShowProfileEdit(false)}><section className="modal compact-modal profile-edit-modal" onClick={event => event.stopPropagation()}><button className="modal-close" onClick={() => setShowProfileEdit(false)}>×</button><span className="micro-label">EDIT PROFILE</span><h3>编辑个人信息</h3><div className="profile-form"><label>昵称<input value={profile.nickname} onChange={event => setProfile(value => ({ ...value, nickname: event.target.value }))} /></label><label>性别<select value={profile.gender} onChange={event => setProfile(value => ({ ...value, gender: event.target.value }))}><option>女</option><option>男</option><option>其他</option></select></label><label>身高（cm）<input value={profile.height} onChange={event => setProfile(value => ({ ...value, height: event.target.value }))} /></label><label>体重（kg）<input value={profile.weight} onChange={event => setProfile(value => ({ ...value, weight: event.target.value }))} /></label><label>身材比例<select value={profile.bodyType} onChange={event => setProfile(value => ({ ...value, bodyType: event.target.value }))}><option>直筒型</option><option>梨形</option><option>苹果型</option><option>沙漏型</option><option>倒三角</option></select></label></div><button className="optional-photo" onClick={() => fileRef.current?.click()}>＋ 上传全身照（可选）</button><button className="primary-modal-button" onClick={() => { setShowProfileEdit(false); notify("个人信息已保存"); }}>保存资料</button></section></div>}
+      {showProfileEdit && <div className="modal-backdrop" onClick={() => setShowProfileEdit(false)}><section className="modal compact-modal profile-edit-modal" onClick={event => event.stopPropagation()}><button className="modal-close" onClick={() => setShowProfileEdit(false)}>×</button><span className="micro-label">EDIT PROFILE</span><h3>编辑个人信息</h3><div className="profile-form"><label>昵称<input value={profile.nickname} onChange={event => setProfile(value => ({ ...value, nickname: event.target.value }))} /></label><label>性别<select value={profile.gender} onChange={event => setProfile(value => ({ ...value, gender: event.target.value }))}><option>女</option><option>男</option><option>其他</option></select></label><label>身高（cm）<input value={profile.height} onChange={event => setProfile(value => ({ ...value, height: event.target.value }))} /></label><label>体重（kg）<input value={profile.weight} onChange={event => setProfile(value => ({ ...value, weight: event.target.value }))} /></label><label>身材比例<select value={profile.bodyType} onChange={event => setProfile(value => ({ ...value, bodyType: event.target.value }))}><option>直筒型</option><option>梨形</option><option>苹果型</option><option>沙漏型</option><option>倒三角</option></select></label></div><button className="optional-photo" onClick={() => openUploadPicker("replace")}>＋ 上传全身照（可选）</button><button className="primary-modal-button" onClick={() => { setShowProfileEdit(false); notify("个人信息已保存"); }}>保存资料</button></section></div>}
       {toast && <div className="toast"><Icon name="check" /> {toast}</div>}
     </main>
   );
