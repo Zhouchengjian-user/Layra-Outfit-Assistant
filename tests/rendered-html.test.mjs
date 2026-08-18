@@ -51,8 +51,10 @@ test("includes the phase-one wardrobe workflow and durable storage", async () =>
   assert.match(cutout, /SegmentCloth/);
   assert.match(cutout, /SegmentCommodity/);
   assert.match(productizer, /qwen-image-2.0/);
-  assert.match(productizer, /2048\*2048/);
+  assert.match(productizer, /1536\*1536/);
   assert.match(productizer, /validateProductImage/);
+  assert.match(processor, /mapWithConcurrency\(detections, 2/);
+  assert.match(page, /点击整张卡片即可切换是否加入衣柜/);
   assert.match(schema, /wardrobeItems/);
   assert.match(hosting, /"d1": "DB"/);
   assert.match(hosting, /"r2": "WARDROBE_IMAGES"/);

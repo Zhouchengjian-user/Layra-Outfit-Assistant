@@ -7,6 +7,8 @@ type Detection = {
   bbox_2d: [number, number, number, number];
   partially_occluded: boolean;
   recommended_api: "SegmentCloth" | "SegmentCommodity";
+  confidence?: number;
+  visible_ratio?: number;
 };
 
 const allowedCategories = new Set(["上衣", "外套", "裤子", "裙子", "连衣裙", "鞋子", "帽子", "包", "首饰", "其他配饰"]);
@@ -93,6 +95,13 @@ function cleanDetections(value: unknown[]) {
     y2 = Math.max(0, Math.min(1000, Math.round(y2)));
     if (x2 - x1 < 12 || y2 - y1 < 12) return [];
     const category = allowedCategories.has(String(item.category)) ? String(item.category) : "其他配饰";
+    const confidence = Math.max(0, Math.min(1, Number(item.confidence) || 0.74));
+    const visibleRatio = Math.max(0, Math.min(1, Number(item.visible_ratio) || 0.7));
+    const boxArea = (x2 - x1) * (y2 - y1);
+    const smallAccessory = ["首饰", "其他配饰"].includes(category);
+    if (confidence < (smallAccessory ? 0.86 : 0.66)) return [];
+    if (visibleRatio < (smallAccessory ? 0.62 : 0.35)) return [];
+    if (boxArea < (smallAccessory ? 4_500 : 10_000)) return [];
     const commodity = ["鞋子", "帽子", "包", "首饰", "其他配饰"].includes(category);
     return [{
       id: Number(item.id) || index + 1,
@@ -101,6 +110,8 @@ function cleanDetections(value: unknown[]) {
       bbox_2d: [x1, y1, x2, y2],
       partially_occluded: Boolean(item.partially_occluded),
       recommended_api: commodity ? "SegmentCommodity" : "SegmentCloth",
+      confidence,
+      visible_ratio: visibleRatio,
     }];
   });
 }
@@ -121,11 +132,20 @@ export async function POST(request: Request) {
     const model = getServerEnv("DASHSCOPE_VISION_MODEL") || "qwen3-vl-flash";
     const imageData = `data:${image.type};base64,${toBase64(await image.arrayBuffer())}`;
     const prompt = `
-识别图片中所有独立穿戴单品。类别只能为：上衣、外套、裤子、裙子、连衣裙、鞋子、帽子、包、首饰、其他配饰。
-同类但完全独立的衣物要逐件输出；一双鞋、一对耳环视为一件，bbox 包含整双/整对。
-bbox_2d 必须使用 0到1000 归一化坐标，格式为 [xmin,ymin,xmax,ymax]。
+你是服饰入库质检员。只识别照片中真实、清晰可见且可单独入柜的穿戴单品，禁止根据穿搭常识猜测被遮住或不存在的物品。
+类别只能为：上衣、外套、裤子、裙子、连衣裙、鞋子、帽子、包、首饰、其他配饰。
+
+边界要求：
+1. 上衣/外套 bbox 只包服装本身，到衣摆为止，不包含头、颈部皮肤、手、裤子或裙子。
+2. 裤子/裙子 bbox 只包下装本身，到裤脚/裙摆为止，不包含上衣、皮带装饰、脚、袜子或鞋。
+3. 鞋子 bbox 包含同一双鞋，但不包含脚、袜子和裤脚；一双鞋视为一件。
+4. 花纹、盘扣、腰带扣、衣服上的装饰图案不是首饰。首饰或其他配饰只有在轮廓清楚、面积足够且能确定真实存在时才输出；不要猜耳环、戒指或项链。
+5. 同类但完全独立的衣物逐件输出；不要把上下装合成一件，也不要重复输出高度重叠的同一单品。
+
+bbox_2d 使用 0到1000 归一化坐标，格式为 [xmin,ymin,xmax,ymax]，尽量贴合物品轮廓且保留约1%安全边距。
+confidence 为识别置信度 0到1；visible_ratio 为该单品可见完整度 0到1。看不清或 confidence 低于0.7的普通单品不要输出；首饰和其他配饰低于0.86不要输出。
 衣物 recommended_api 为 SegmentCloth，鞋帽包首饰为 SegmentCommodity。
-只返回严格 JSON 数组，每项包含 id、category、color、bbox_2d、partially_occluded、recommended_api，不要解释。`;
+只返回严格 JSON 数组，每项包含 id、category、color、bbox_2d、partially_occluded、confidence、visible_ratio、recommended_api，不要解释。`;
 
     const response = await fetch(`${baseUrl}/chat/completions`, {
       method: "POST",

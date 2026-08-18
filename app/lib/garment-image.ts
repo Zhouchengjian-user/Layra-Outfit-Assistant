@@ -106,14 +106,15 @@ async function createAnalysisBlob(file: File) {
   return canvasToJpegBlob(canvas, 0.86);
 }
 
-async function cropDetection(file: File, box: [number, number, number, number]) {
+async function cropDetection(file: File, box: [number, number, number, number], category: string) {
   const bitmap = await createImageBitmap(file);
   const [x1, y1, x2, y2] = box;
   const rawX = x1 / 1000 * bitmap.width;
   const rawY = y1 / 1000 * bitmap.height;
   const rawW = Math.max(1, (x2 - x1) / 1000 * bitmap.width);
   const rawH = Math.max(1, (y2 - y1) / 1000 * bitmap.height);
-  const padding = Math.max(rawW, rawH) * 0.055;
+  const paddingRate = ["首饰", "其他配饰"].includes(category) ? 0.065 : 0.025;
+  const padding = Math.max(rawW, rawH) * paddingRate;
   const sourceX = Math.max(0, Math.floor(rawX - padding));
   const sourceY = Math.max(0, Math.floor(rawY - padding));
   const sourceW = Math.min(bitmap.width - sourceX, Math.ceil(rawW + padding * 2));
@@ -161,9 +162,8 @@ export async function processGarmentUpload(file: File): Promise<ProcessedGarment
     return [{ ...fallback, cutoutQuality: "failed" }];
   }
 
-  const results: ProcessedGarmentImage[] = [];
-  for (const detection of detections) {
-    const sourceBlob = await cropDetection(file, detection.bbox_2d);
+  const results = await mapWithConcurrency(detections, 2, async detection => {
+    const sourceBlob = await cropDetection(file, detection.bbox_2d, detection.category);
     let blob = sourceBlob;
     let cutoutQuality: ProcessedGarmentImage["cutoutQuality"] = "failed";
     try {
@@ -175,7 +175,7 @@ export async function processGarmentUpload(file: File): Promise<ProcessedGarment
     }
     const category = displayCategory(detection.category);
     const color = colorForName(detection.color);
-    results.push({
+    return {
       blob,
       previewUrl: URL.createObjectURL(blob),
       originalUrl: URL.createObjectURL(sourceBlob),
@@ -186,9 +186,22 @@ export async function processGarmentUpload(file: File): Promise<ProcessedGarment
       style: "简约",
       name: `${color.name}${detection.category}`,
       cutoutQuality,
-    });
-  }
+    } satisfies ProcessedGarmentImage;
+  });
   return results.length ? results : [await processGarmentImage(file)];
+}
+
+async function mapWithConcurrency<T, R>(items: T[], limit: number, mapper: (item: T, index: number) => Promise<R>) {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  async function worker() {
+    while (nextIndex < items.length) {
+      const index = nextIndex++;
+      results[index] = await mapper(items[index], index);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => worker()));
+  return results;
 }
 
 export async function processGarmentImage(file: File): Promise<ProcessedGarmentImage> {
