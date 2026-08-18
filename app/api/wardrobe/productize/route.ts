@@ -28,6 +28,8 @@ function productPrompt(category: string, color: string) {
         ? "只展示鞋本身；严禁出现脚、袜子、裤脚、腿、鞋盒或地面。"
         : category.includes("帽")
           ? "只展示帽子本身；严禁出现头部、头发、脸和衣服。"
+          : category.includes("腰带")
+            ? "只展示一条完整腰带，带身与扣头清楚可见，可水平平铺或自然盘成单圈；严禁出现人体腰部、皮肤、上衣、裤子和其他配饰。"
           : category.includes("包")
             ? "只展示包本身；严禁出现手、人体、衣服和随身杂物。"
             : "只展示原图中真实可见的目标配饰，保持真实形状和材质；严禁根据服装花纹、纽扣或衣物装饰虚构首饰。";
@@ -43,6 +45,7 @@ function validationRule(category: string) {
   if (category.includes("裤") || category.includes("裙") || category.includes("下装")) return "不得包含上衣、人体、腿脚、袜子或鞋，裤脚/裙摆必须完整结束";
   if (category.includes("鞋")) return "不得包含脚、袜子、裤脚或腿";
   if (category.includes("帽")) return "不得包含头、脸、头发或衣服";
+  if (category.includes("腰带")) return "腰带带身和扣头必须完整，不得包含人体腰部、皮肤、上衣或裤子";
   return "不得包含人体、其他衣物或模型虚构的无关物品";
 }
 

@@ -185,27 +185,52 @@ export default function Home() {
     const selected = garmentDrafts.filter(item => item.selected);
     if (!selected.length) { notify("请至少选择一件衣物"); return; }
     setUploadSaving(true);
-    const saved: WardrobeItem[] = [];
+    const saved = new Array<WardrobeItem | null>(selected.length).fill(null);
+    const errors = new Array<string | null>(selected.length).fill(null);
     try {
-      for (const draft of selected) {
-        const form = new FormData();
-        const extension = draft.blob.type === "image/jpeg" ? "jpg" : "png";
-        form.append("image", draft.blob, `${draft.id}.${extension}`);
-        form.append("name", draft.name);
-        form.append("category", draft.category);
-        form.append("colorName", draft.colorName);
-        form.append("colorHex", draft.colorHex);
-        form.append("season", draft.season);
-        form.append("style", draft.style);
-        form.append("aiTags", JSON.stringify(draft.aiTags));
-        const response = await fetch("/api/wardrobe", { method: "POST", body: form });
-        const payload = await response.json();
-        if (!response.ok) throw new Error(payload.error || "保存失败");
-        saved.push(payload.item);
+      let nextIndex = 0;
+      async function saveWorker() {
+        while (nextIndex < selected.length) {
+          const index = nextIndex++;
+          const draft = selected[index];
+          const form = new FormData();
+          const extension = draft.blob.type === "image/jpeg" ? "jpg" : "png";
+          form.append("image", draft.blob, `${draft.id}.${extension}`);
+          form.append("name", draft.name);
+          form.append("category", draft.category);
+          form.append("colorName", draft.colorName);
+          form.append("colorHex", draft.colorHex);
+          form.append("season", draft.season);
+          form.append("style", draft.style);
+          form.append("aiTags", JSON.stringify(draft.aiTags));
+          try {
+            const response = await fetch("/api/wardrobe", { method: "POST", body: form });
+            const payload = await response.json();
+            if (!response.ok) throw new Error(payload.error || "保存失败");
+            saved[index] = payload.item;
+          } catch (error) {
+            errors[index] = error instanceof Error ? error.message : "保存失败";
+          }
+        }
       }
-      setWardrobeItems(current => [...saved, ...current]);
-      closeUpload();
-      notify(`${saved.length} 件衣物已加入衣柜`);
+      await Promise.all(Array.from({ length: Math.min(4, selected.length) }, () => saveWorker()));
+      const completed = saved.filter((item): item is WardrobeItem => item !== null);
+      if (completed.length) setWardrobeItems(current => [...completed, ...current]);
+      const failedCount = errors.filter(Boolean).length;
+      if (!failedCount) {
+        closeUpload();
+        notify(`${completed.length} 件衣物已加入衣柜`);
+      } else {
+        const completedIds = new Set(selected.filter((_, index) => saved[index]).map(item => item.id));
+        selected.forEach((item, index) => {
+          if (saved[index]) {
+            URL.revokeObjectURL(item.previewUrl);
+            URL.revokeObjectURL(item.originalUrl);
+          }
+        });
+        setGarmentDrafts(current => current.filter(item => !completedIds.has(item.id)));
+        notify(`${completed.length} 件已加入，${failedCount} 件保存失败，请重试`);
+      }
     } catch (error) {
       notify(error instanceof Error ? error.message : "保存失败，请稍后重试");
     } finally {

@@ -81,7 +81,7 @@ function displayCategory(category: string) {
   if (category === "连衣裙") return "连衣裙";
   if (category === "鞋子") return "鞋履";
   if (category === "帽子") return "帽子";
-  if (["包", "首饰", "其他配饰"].includes(category)) return "配饰";
+  if (["腰带", "包", "首饰", "其他配饰"].includes(category)) return "配饰";
   return "上衣";
 }
 

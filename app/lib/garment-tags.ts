@@ -35,7 +35,7 @@ function defaultLayer(category: string) {
   if (["裤子", "裙子", "下装"].includes(category)) return "下装";
   if (category === "连衣裙") return "连体";
   if (["鞋子", "鞋履"].includes(category)) return "鞋履";
-  if (["包", "帽子", "首饰", "其他配饰", "配饰"].includes(category)) return "配饰";
+  if (["腰带", "包", "帽子", "首饰", "其他配饰", "配饰"].includes(category)) return "配饰";
   return "内搭";
 }
 

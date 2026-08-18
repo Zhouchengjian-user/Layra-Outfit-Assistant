@@ -11,7 +11,7 @@ type Detection = {
   visible_ratio?: number;
 };
 
-const allowedCategories = new Set(["上衣", "外套", "裤子", "裙子", "连衣裙", "鞋子", "帽子", "包", "首饰", "其他配饰"]);
+const allowedCategories = new Set(["上衣", "外套", "裤子", "裙子", "连衣裙", "鞋子", "帽子", "腰带", "包", "首饰", "其他配饰"]);
 
 const colorAliases: Record<string, string> = {
   white: "白色", black: "黑色", grey: "灰色", gray: "灰色", blue: "蓝色",
@@ -41,8 +41,10 @@ function mergePairs(items: Detection[]) {
       const [cx1, cy1, cx2, cy2] = candidate.bbox_2d;
       const verticalOverlap = Math.max(0, Math.min(y2, cy2) - Math.max(y1, cy1));
       const minHeight = Math.max(1, Math.min(y2 - y1, cy2 - cy1));
+      const maxHeight = Math.max(y2 - y1, cy2 - cy1);
+      const centerYDistance = Math.abs((y1 + y2) / 2 - (cy1 + cy2) / 2);
       const horizontalGap = Math.max(0, Math.max(x1, cx1) - Math.min(x2, cx2));
-      return verticalOverlap / minHeight > 0.45 && horizontalGap < 220;
+      return horizontalGap < 300 && (verticalOverlap / minHeight > 0.18 || centerYDistance < maxHeight * 0.65);
     });
     if (matchIndex < 0) {
       merged.push(item);
@@ -126,11 +128,12 @@ function cleanDetections(value: unknown[]) {
     const boxArea = (x2 - x1) * (y2 - y1);
     const smallAccessory = ["首饰", "其他配饰"].includes(category);
     const footwear = category === "鞋子";
-    if (confidence < (smallAccessory ? 0.86 : footwear ? 0.56 : 0.66)) return [];
-    if (visibleRatio < (smallAccessory ? 0.62 : footwear ? 0.4 : 0.5)) return [];
-    if (Boolean(item.partially_occluded) && visibleRatio < (smallAccessory ? 0.76 : footwear ? 0.52 : 0.68)) return [];
-    if (boxArea < (smallAccessory ? 4_500 : footwear ? 5_000 : 10_000)) return [];
-    const commodity = ["鞋子", "帽子", "包", "首饰", "其他配饰"].includes(category);
+    const wearableAccessory = ["帽子", "腰带"].includes(category);
+    if (confidence < (smallAccessory ? 0.86 : footwear ? 0.56 : wearableAccessory ? 0.6 : 0.66)) return [];
+    if (visibleRatio < (smallAccessory ? 0.62 : footwear ? 0.4 : wearableAccessory ? 0.35 : 0.5)) return [];
+    if (Boolean(item.partially_occluded) && visibleRatio < (smallAccessory ? 0.76 : footwear ? 0.52 : wearableAccessory ? 0.45 : 0.68)) return [];
+    if (boxArea < (smallAccessory ? 4_500 : footwear ? 5_000 : wearableAccessory ? 2_500 : 10_000)) return [];
+    const commodity = ["鞋子", "帽子", "腰带", "包", "首饰", "其他配饰"].includes(category);
     return [{
       id: Number(item.id) || index + 1,
       category,
@@ -182,22 +185,45 @@ function overlapOfSmaller(a: Detection, b: Detection) {
 }
 
 function isSameFootwearObject(a: Detection, b: Detection) {
-  return a.category === "鞋子" && b.category === "鞋子" && (boxIou(a, b) > 0.28 || overlapOfSmaller(a, b) > 0.62);
+  return a.category === "鞋子" && b.category === "鞋子" && (boxIou(a, b) > 0.12 || overlapOfSmaller(a, b) > 0.28);
+}
+
+function mergeDetectionBoxes(a: Detection, b: Detection): Detection {
+  return {
+    ...a,
+    color: a.color === "未识别" ? b.color : a.color,
+    bbox_2d: [
+      Math.min(a.bbox_2d[0], b.bbox_2d[0]),
+      Math.min(a.bbox_2d[1], b.bbox_2d[1]),
+      Math.max(a.bbox_2d[2], b.bbox_2d[2]),
+      Math.max(a.bbox_2d[3], b.bbox_2d[3]),
+    ],
+    partially_occluded: a.partially_occluded || b.partially_occluded,
+    confidence: Math.max(a.confidence || 0, b.confidence || 0),
+    visible_ratio: Math.max(a.visible_ratio || 0, b.visible_ratio || 0),
+  };
 }
 
 function deduplicateShoes(items: Detection[]) {
   const shoes = items.filter(item => item.category === "鞋子").sort((a, b) => boxArea(b) - boxArea(a));
   const uniqueShoes: Detection[] = [];
   for (const shoe of shoes) {
-    if (!uniqueShoes.some(candidate => isSameFootwearObject(candidate, shoe))) uniqueShoes.push(shoe);
+    const matchIndex = uniqueShoes.findIndex(candidate => isSameFootwearObject(candidate, shoe));
+    if (matchIndex < 0) uniqueShoes.push(shoe);
+    else uniqueShoes[matchIndex] = mergeDetectionBoxes(uniqueShoes[matchIndex], shoe);
   }
   return [...items.filter(item => item.category !== "鞋子"), ...uniqueShoes];
 }
 
-function addMissingShoes(items: Detection[], shoes: Detection[]) {
+function isSameFocusedAccessory(a: Detection, b: Detection) {
+  if (a.category !== b.category) return false;
+  return a.category === "鞋子" ? isSameFootwearObject(a, b) : boxIou(a, b) > 0.2 || overlapOfSmaller(a, b) > 0.55;
+}
+
+function addMissingFocusedItems(items: Detection[], focusedItems: Detection[]) {
   const merged = [...items];
-  for (const shoe of shoes.filter(item => item.category === "鞋子")) {
-    if (!merged.some(item => isSameFootwearObject(item, shoe))) merged.push(shoe);
+  for (const focusedItem of focusedItems.filter(item => ["鞋子", "帽子", "腰带"].includes(item.category))) {
+    if (!merged.some(item => isSameFocusedAccessory(item, focusedItem))) merged.push(focusedItem);
   }
   return deduplicateShoes(merged);
 }
@@ -219,33 +245,35 @@ export async function POST(request: Request) {
     const imageData = `data:${image.type};base64,${toBase64(await image.arrayBuffer())}`;
     const prompt = `
 你是服饰入库质检员。只识别照片中真实、清晰可见且可单独入柜的穿戴单品，禁止根据穿搭常识猜测被遮住或不存在的物品。
-类别只能为：上衣、外套、裤子、裙子、连衣裙、鞋子、帽子、包、首饰、其他配饰。
+类别只能为：上衣、外套、裤子、裙子、连衣裙、鞋子、帽子、腰带、包、首饰、其他配饰。
 
 边界要求：
 1. 上衣/外套 bbox 只包服装本身，到衣摆为止，不包含头、颈部皮肤、手、裤子或裙子。
 2. 裤子/裙子 bbox 只包下装本身，到裤脚/裙摆为止，不包含上衣、皮带装饰、脚、袜子或鞋。
 3. 鞋子 bbox 包含同一双鞋，但不包含脚、袜子和裤脚；一双鞋视为一件。
-4. 花纹、盘扣、腰带扣、衣服上的装饰图案不是首饰。首饰或其他配饰只有在轮廓清楚、面积足够且能确定真实存在时才输出；不要猜耳环、戒指或项链。
+4. 独立佩戴、具有完整带身和扣头的腰带输出为腰带；只有腰带扣、裤腰、衣服自带系带、衬衫打结或服装装饰带时不要输出腰带。花纹、盘扣和衣服上的装饰图案不是首饰。
 5. 同类但完全独立的衣物逐件输出；不要把上下装合成一件，也不要重复输出高度重叠的同一单品。
 6. 若某件内搭或下装被长外套遮住超过一半，只露出局部边缘、开衩或下摆，无法判断完整轮廓和版型，则不要输出该单品。宁可少识别，也绝不根据局部颜色脑补完整衣物。
 
 bbox_2d 使用 0到1000 归一化坐标，格式为 [xmin,ymin,xmax,ymax]，尽量贴合物品轮廓且保留约1%安全边距。
 confidence 为识别置信度 0到1；visible_ratio 为该单品可见完整度 0到1。看不清或 confidence 低于0.7的普通单品不要输出；首饰和其他配饰低于0.86不要输出。
-衣物 recommended_api 为 SegmentCloth，鞋帽包首饰为 SegmentCommodity。
+衣物 recommended_api 为 SegmentCloth，鞋帽腰带包首饰为 SegmentCommodity。
 只返回严格 JSON 数组，每项包含 id、category、color、bbox_2d、partially_occluded、confidence、visible_ratio、recommended_api，不要解释。`;
-    const shoePrompt = `
-只检查照片下半部和画面底部是否有真实可见的鞋履。不要识别任何衣服、包或首饰。
-即使鞋子占画面较小，也要仔细检查人物脚部；只要鞋面、鞋头和基本鞋型清楚可见，就输出鞋子。一双鞋视为一件，bbox 必须同时包住左右两只鞋，但不能包含小腿、袜子、地面或裙裤。
-bbox_2d 使用0到1000归一化坐标。只返回严格JSON数组，每项固定包含 id、category:"鞋子"、color、bbox_2d、partially_occluded、confidence、visible_ratio、recommended_api:"SegmentCommodity"。没有鞋子则返回[]。`;
+    const focusedAccessoryPrompt = `
+只复核照片中真实可见的帽子、腰带和鞋子，不要输出衣服、裤子、包、手机、手表或首饰。
+1. 帽子：只框独立帽体，不包含头、脸和头发；棒球帽、针织帽、礼帽均可。即使位于画面顶部且面积较小也要检查。
+2. 腰带：必须看到独立带身沿腰部延伸并有真实扣头，只框腰带本身；裤腰、衬衫下摆打结、衣服自带系带或只有扣头时不要输出。
+3. 鞋子：仔细检查画面底部人物脚部；一双鞋视为一件，bbox 尽量同时包住左右两只鞋，不包含小腿、袜子、地面或裤脚。模型若只能分别框左右鞋也可以逐只输出，系统会合并。
+bbox_2d 使用0到1000归一化坐标。只返回严格JSON数组，每项包含 id、category（只能是帽子、腰带、鞋子）、color、bbox_2d、partially_occluded、confidence、visible_ratio、recommended_api:"SegmentCommodity"。没有则返回[]。`;
 
-    const [generalResult, shoeResult] = await Promise.allSettled([
+    const [generalResult, focusedResult] = await Promise.allSettled([
       requestDetections(baseUrl, apiKey, model, imageData, prompt),
-      requestDetections(baseUrl, apiKey, model, imageData, shoePrompt),
+      requestDetections(baseUrl, apiKey, model, imageData, focusedAccessoryPrompt),
     ]);
     const general = generalResult.status === "fulfilled" ? generalResult.value : [];
-    const shoes = shoeResult.status === "fulfilled" ? shoeResult.value : [];
-    if (!general.length && !shoes.length) throw generalResult.status === "rejected" ? generalResult.reason : new Error("没有识别到可入柜的单品");
-    const detections = mergePairs(removeItemsHiddenByOuterwear(addMissingShoes(general, shoes)));
+    const focusedItems = focusedResult.status === "fulfilled" ? focusedResult.value : [];
+    if (!general.length && !focusedItems.length) throw generalResult.status === "rejected" ? generalResult.reason : new Error("没有识别到可入柜的单品");
+    const detections = mergePairs(removeItemsHiddenByOuterwear(addMissingFocusedItems(general, focusedItems)));
     if (!detections.length) throw new Error("没有识别到可入柜的单品");
     return Response.json({ detections });
   } catch (error) {

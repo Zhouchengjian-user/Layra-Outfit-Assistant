@@ -50,14 +50,17 @@ test("includes the phase-one wardrobe workflow and durable storage", async () =>
   assert.match(analyzer, /qwen3-vl-flash/);
   assert.match(analyzer, /mergePairs/);
   assert.match(analyzer, /removeItemsHiddenByOuterwear/);
-  assert.match(analyzer, /shoePrompt/);
-  assert.match(analyzer, /addMissingShoes/);
+  assert.match(analyzer, /focusedAccessoryPrompt/);
+  assert.match(analyzer, /addMissingFocusedItems/);
   assert.match(analyzer, /deduplicateShoes/);
   assert.match(analyzer, /overlapOfSmaller/);
+  assert.match(analyzer, /centerYDistance/);
+  assert.match(analyzer, /腰带/);
   assert.match(cutout, /SegmentCloth/);
   assert.match(cutout, /SegmentCommodity/);
   assert.match(productizer, /qwen-image-2.0/);
   assert.match(productizer, /1536\*1536/);
+  assert.match(productizer, /一条完整腰带/);
   assert.match(productizer, /validateProductImage/);
   assert.match(productizer, /图一是原始裁剪/);
   assert.match(productizer, /X-Yida-Tags/);
@@ -66,6 +69,7 @@ test("includes the phase-one wardrobe workflow and durable storage", async () =>
   assert.match(tagger, /occasions/);
   assert.match(page, /AI搭配标签/);
   assert.match(page, /删除失败，衣物已恢复/);
+  assert.match(page, /Math\.min\(4, selected\.length\)/);
   assert.match(api, /schemaReady/);
   assert.match(processor, /mapWithConcurrency\(detections, 2/);
   assert.match(page, /点击整张卡片即可切换是否加入衣柜/);
