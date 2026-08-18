@@ -1,4 +1,5 @@
 import { getServerEnv, requireServerEnv } from "../../../lib/server-env";
+import { encodeGarmentTags, normalizeGarmentAITags } from "../../../lib/garment-tags";
 
 type GenerationPayload = {
   code?: string;
@@ -60,16 +61,31 @@ async function validateProductImage(sourceImage: string, imageUrl: string, categ
         messages: [{ role: "user", content: [
           { type: "image_url", image_url: { url: sourceImage } },
           { type: "image_url", image_url: { url: imageUrl } },
-          { type: "text", text: `图一是原始裁剪，可能包含人物和其他衣物；图二是根据图一生成的商品图。目标是${color}${category}。只有同时满足以下条件才回答 PASS：目标单品在图一中足够完整、可以可靠还原；图二与图一目标单品的类别、主色、长度、轮廓、版型和图案一致；图二只能有目标商品本身；${validationRule(category)}；不能有场景或杂物；商品完整未裁切；背景纯白或接近纯白；图像清晰。如果图一中的目标被外套或人体遮住大半、无法判断完整结构，或者图二混入了其他衣服的颜色和结构，必须回答 REVIEW。只回答 PASS 或 REVIEW。` },
+          { type: "text", text: `图一是原始裁剪，可能包含人物和其他衣物；图二是根据图一生成的商品图。目标是${color}${category}。
+先做质量判断：目标单品在图一中应足够完整；图二要与图一的类别、主色、长度、轮廓、版型和图案一致；图二只能有目标商品；${validationRule(category)}；背景纯白或接近纯白。如果图一目标被遮住大半，或图二混入其他衣服，quality 必须为 REVIEW，否则为 PASS。
+再为后续AI穿搭生成结构化标签：
+- subcategory：具体品类，如风衣、针织衫、阔腿裤、玛丽珍鞋、腋下包；
+- material：主要视觉材质；pattern：纯色/条纹/格纹/印花/波点/图案；fit：修身/合体/宽松；length：短款/常规/长款；
+- colorTone：浅暖色/深暖色/浅冷色/深冷色/中性色；layer：内搭/外层/下装/连体/鞋履/配饰；
+- warmth、formality：1到5整数；styles 最多3个；occasions 只能从通勤、约会、休闲、聚会、运动、正式活动中选；seasons 从春、夏、秋、冬中选；weather 从炎热、微凉、寒冷、有风、小雨中选。
+只返回严格JSON对象，不要解释：{"quality":"PASS或REVIEW","tags":{"subcategory":"","material":"","pattern":"","fit":"","length":"","colorTone":"","layer":"","warmth":3,"formality":3,"styles":[],"occasions":[],"seasons":[],"weather":[]}}` },
         ] }],
-        max_tokens: 3,
+        max_tokens: 280,
       }),
       signal: AbortSignal.timeout(45_000),
     });
     const payload = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
-    return response.ok && /^\s*PASS\s*$/i.test(payload.choices?.[0]?.message?.content || "") ? "good" : "review";
+    const content = payload.choices?.[0]?.message?.content || "";
+    const stripped = content.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+    const start = stripped.indexOf("{");
+    const end = stripped.lastIndexOf("}");
+    const parsed = start >= 0 && end > start ? JSON.parse(stripped.slice(start, end + 1)) as { quality?: string; tags?: unknown } : {};
+    return {
+      quality: response.ok && parsed.quality === "PASS" ? "good" as const : "review" as const,
+      tags: normalizeGarmentAITags(parsed.tags, { category, color }),
+    };
   } catch {
-    return "review";
+    return { quality: "review" as const, tags: normalizeGarmentAITags(null, { category, color }) };
   }
 }
 
@@ -117,15 +133,18 @@ export async function POST(request: Request) {
       throw new Error(payload.message || payload.code || "高清商品图生成失败");
     }
 
-    const quality = await validateProductImage(imageData, generatedUrl, category, color);
-    const generated = await fetch(generatedUrl, { signal: AbortSignal.timeout(60_000) });
+    const [validation, generated] = await Promise.all([
+      validateProductImage(imageData, generatedUrl, category, color),
+      fetch(generatedUrl, { signal: AbortSignal.timeout(60_000) }),
+    ]);
     if (!generated.ok) throw new Error("高清商品图下载失败");
     return new Response(await generated.arrayBuffer(), {
       headers: {
         "Content-Type": generated.headers.get("Content-Type") || "image/png",
         "Cache-Control": "no-store",
-        "X-Yida-Quality": quality,
+        "X-Yida-Quality": validation.quality,
         "X-Yida-Output": "product-image-hd",
+        "X-Yida-Tags": encodeGarmentTags(validation.tags),
       },
     });
   } catch (error) {

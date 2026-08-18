@@ -15,6 +15,13 @@
       "when": 1787035852914,
       "tag": "0001_serious_grey_gargoyle",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1787047399925,
+      "tag": "0002_mature_leader",
+      "breakpoints": true
     }
   ]
 }

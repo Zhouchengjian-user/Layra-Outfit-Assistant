@@ -28,9 +28,10 @@ test("server-renders the Easy Outfit product shell", async () => {
 });
 
 test("includes the phase-one wardrobe workflow and durable storage", async () => {
-  const [page, processor, api, analyzer, cutout, productizer, schema, hosting] = await Promise.all([
+  const [page, processor, tagger, api, analyzer, cutout, productizer, schema, hosting] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/lib/garment-image.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/lib/garment-tags.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/wardrobe/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/wardrobe/analyze/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/wardrobe/cutout/route.ts", import.meta.url), "utf8"),
@@ -49,12 +50,19 @@ test("includes the phase-one wardrobe workflow and durable storage", async () =>
   assert.match(analyzer, /qwen3-vl-flash/);
   assert.match(analyzer, /mergePairs/);
   assert.match(analyzer, /removeItemsHiddenByOuterwear/);
+  assert.match(analyzer, /shoePrompt/);
+  assert.match(analyzer, /addMissingShoes/);
   assert.match(cutout, /SegmentCloth/);
   assert.match(cutout, /SegmentCommodity/);
   assert.match(productizer, /qwen-image-2.0/);
   assert.match(productizer, /1536\*1536/);
   assert.match(productizer, /validateProductImage/);
   assert.match(productizer, /图一是原始裁剪/);
+  assert.match(productizer, /X-Yida-Tags/);
+  assert.match(api, /ai_tags/);
+  assert.match(tagger, /formality/);
+  assert.match(tagger, /occasions/);
+  assert.match(page, /AI搭配标签/);
   assert.match(processor, /mapWithConcurrency\(detections, 2/);
   assert.match(page, /点击整张卡片即可切换是否加入衣柜/);
   assert.match(schema, /wardrobeItems/);

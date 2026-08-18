@@ -1,3 +1,5 @@
+import { decodeGarmentTags, normalizeGarmentAITags, type GarmentAITags } from "./garment-tags";
+
 export type ProcessedGarmentImage = {
   blob: Blob;
   previewUrl: string;
@@ -9,6 +11,7 @@ export type ProcessedGarmentImage = {
   style: string;
   name: string;
   cutoutQuality: "good" | "review" | "failed";
+  aiTags: GarmentAITags;
 };
 
 type GarmentDetection = {
@@ -151,6 +154,7 @@ async function productizeGarment(blob: Blob, category: string, color: string) {
   return {
     blob: await response.blob(),
     quality: response.headers.get("X-Yida-Quality") === "good" ? "good" as const : "review" as const,
+    aiTags: decodeGarmentTags(response.headers.get("X-Yida-Tags"), { category, color }),
   };
 }
 
@@ -165,17 +169,19 @@ export async function processGarmentUpload(file: File): Promise<ProcessedGarment
 
   const results = await mapWithConcurrency(detections, 2, async detection => {
     const sourceBlob = await cropDetection(file, detection.bbox_2d, detection.category);
+    const category = displayCategory(detection.category);
+    const color = colorForName(detection.color);
     let blob = sourceBlob;
     let cutoutQuality: ProcessedGarmentImage["cutoutQuality"] = "failed";
+    let aiTags = normalizeGarmentAITags(null, { category: detection.category, color: detection.color, season: "四季", style: "简约" });
     try {
       const generated = await productizeGarment(sourceBlob, detection.category, detection.color);
       blob = generated.blob;
       cutoutQuality = generated.quality;
+      aiTags = generated.aiTags;
     } catch {
       // Keep the source crop only as a diagnostic preview. Failed items are not selected for saving.
     }
-    const category = displayCategory(detection.category);
-    const color = colorForName(detection.color);
     return {
       blob,
       previewUrl: URL.createObjectURL(blob),
@@ -187,6 +193,7 @@ export async function processGarmentUpload(file: File): Promise<ProcessedGarment
       style: "简约",
       name: `${color.name}${detection.category}`,
       cutoutQuality,
+      aiTags,
     } satisfies ProcessedGarmentImage;
   });
   return results.length ? results : [await processGarmentImage(file)];
@@ -319,5 +326,6 @@ export async function processGarmentImage(file: File): Promise<ProcessedGarmentI
     style: "简约",
     name: `${dominant.name}${category}`,
     cutoutQuality: hasSubject ? "good" : "review",
+    aiTags: normalizeGarmentAITags(null, { category, color: dominant.name, season: "四季", style: "简约" }),
   };
 }

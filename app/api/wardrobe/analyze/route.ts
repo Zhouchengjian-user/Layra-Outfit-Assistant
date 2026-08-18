@@ -82,6 +82,32 @@ function parseJsonContent(content: string) {
   return JSON.parse(stripped.slice(start, end + 1)) as unknown[];
 }
 
+async function requestDetections(baseUrl: string, apiKey: string, model: string, imageData: string, prompt: string) {
+  const response = await fetch(`${baseUrl}/chat/completions`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model,
+      temperature: 0.1,
+      enable_thinking: false,
+      messages: [{ role: "user", content: [
+        { type: "image_url", image_url: { url: imageData } },
+        { type: "text", text: prompt },
+      ] }],
+    }),
+    signal: AbortSignal.timeout(60_000),
+  });
+  const payload = await response.json() as Record<string, unknown>;
+  if (!response.ok) {
+    const message = (payload.error as Record<string, unknown> | undefined)?.message;
+    throw new Error(typeof message === "string" ? message : "单品识别失败");
+  }
+  const choices = payload.choices as Array<{ message?: { content?: string } }> | undefined;
+  const content = choices?.[0]?.message?.content;
+  if (!content) throw new Error("模型未返回识别结果");
+  return cleanDetections(parseJsonContent(content));
+}
+
 function cleanDetections(value: unknown[]) {
   return value.slice(0, 20).flatMap((entry, index): Detection[] => {
     if (!entry || typeof entry !== "object") return [];
@@ -99,10 +125,11 @@ function cleanDetections(value: unknown[]) {
     const visibleRatio = Math.max(0, Math.min(1, Number(item.visible_ratio) || 0.7));
     const boxArea = (x2 - x1) * (y2 - y1);
     const smallAccessory = ["首饰", "其他配饰"].includes(category);
-    if (confidence < (smallAccessory ? 0.86 : 0.66)) return [];
-    if (visibleRatio < (smallAccessory ? 0.62 : 0.5)) return [];
-    if (Boolean(item.partially_occluded) && visibleRatio < (smallAccessory ? 0.76 : 0.68)) return [];
-    if (boxArea < (smallAccessory ? 4_500 : 10_000)) return [];
+    const footwear = category === "鞋子";
+    if (confidence < (smallAccessory ? 0.86 : footwear ? 0.56 : 0.66)) return [];
+    if (visibleRatio < (smallAccessory ? 0.62 : footwear ? 0.4 : 0.5)) return [];
+    if (Boolean(item.partially_occluded) && visibleRatio < (smallAccessory ? 0.76 : footwear ? 0.52 : 0.68)) return [];
+    if (boxArea < (smallAccessory ? 4_500 : footwear ? 5_000 : 10_000)) return [];
     const commodity = ["鞋子", "帽子", "包", "首饰", "其他配饰"].includes(category);
     return [{
       id: Number(item.id) || index + 1,
@@ -132,6 +159,22 @@ function removeItemsHiddenByOuterwear(items: Detection[]) {
     const coveredRatio = Math.max(0, ...outerwear.map(cover => intersectionRatio(item, cover)));
     return coveredRatio < 0.52;
   });
+}
+
+function boxIou(a: Detection, b: Detection) {
+  const [x1, y1, x2, y2] = a.bbox_2d;
+  const [bx1, by1, bx2, by2] = b.bbox_2d;
+  const intersection = Math.max(0, Math.min(x2, bx2) - Math.max(x1, bx1)) * Math.max(0, Math.min(y2, by2) - Math.max(y1, by1));
+  const union = (x2 - x1) * (y2 - y1) + (bx2 - bx1) * (by2 - by1) - intersection;
+  return intersection / Math.max(1, union);
+}
+
+function addMissingShoes(items: Detection[], shoes: Detection[]) {
+  const merged = [...items];
+  for (const shoe of shoes.filter(item => item.category === "鞋子")) {
+    if (!merged.some(item => item.category === "鞋子" && boxIou(item, shoe) > 0.35)) merged.push(shoe);
+  }
+  return merged;
 }
 
 export async function POST(request: Request) {
@@ -165,30 +208,19 @@ bbox_2d 使用 0到1000 归一化坐标，格式为 [xmin,ymin,xmax,ymax]，尽�
 confidence 为识别置信度 0到1；visible_ratio 为该单品可见完整度 0到1。看不清或 confidence 低于0.7的普通单品不要输出；首饰和其他配饰低于0.86不要输出。
 衣物 recommended_api 为 SegmentCloth，鞋帽包首饰为 SegmentCommodity。
 只返回严格 JSON 数组，每项包含 id、category、color、bbox_2d、partially_occluded、confidence、visible_ratio、recommended_api，不要解释。`;
+    const shoePrompt = `
+只检查照片下半部和画面底部是否有真实可见的鞋履。不要识别任何衣服、包或首饰。
+即使鞋子占画面较小，也要仔细检查人物脚部；只要鞋面、鞋头和基本鞋型清楚可见，就输出鞋子。一双鞋视为一件，bbox 必须同时包住左右两只鞋，但不能包含小腿、袜子、地面或裙裤。
+bbox_2d 使用0到1000归一化坐标。只返回严格JSON数组，每项固定包含 id、category:"鞋子"、color、bbox_2d、partially_occluded、confidence、visible_ratio、recommended_api:"SegmentCommodity"。没有鞋子则返回[]。`;
 
-    const response = await fetch(`${baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model,
-        temperature: 0.1,
-        enable_thinking: false,
-        messages: [{ role: "user", content: [
-          { type: "image_url", image_url: { url: imageData } },
-          { type: "text", text: prompt },
-        ] }],
-      }),
-      signal: AbortSignal.timeout(60_000),
-    });
-    const payload = await response.json() as Record<string, unknown>;
-    if (!response.ok) {
-      const message = (payload.error as Record<string, unknown> | undefined)?.message;
-      throw new Error(typeof message === "string" ? message : "单品识别失败");
-    }
-    const choices = payload.choices as Array<{ message?: { content?: string } }> | undefined;
-    const content = choices?.[0]?.message?.content;
-    if (!content) throw new Error("模型未返回识别结果");
-    const detections = mergePairs(removeItemsHiddenByOuterwear(cleanDetections(parseJsonContent(content))));
+    const [generalResult, shoeResult] = await Promise.allSettled([
+      requestDetections(baseUrl, apiKey, model, imageData, prompt),
+      requestDetections(baseUrl, apiKey, model, imageData, shoePrompt),
+    ]);
+    const general = generalResult.status === "fulfilled" ? generalResult.value : [];
+    const shoes = shoeResult.status === "fulfilled" ? shoeResult.value : [];
+    if (!general.length && !shoes.length) throw generalResult.status === "rejected" ? generalResult.reason : new Error("没有识别到可入柜的单品");
+    const detections = mergePairs(removeItemsHiddenByOuterwear(addMissingShoes(general, shoes)));
     if (!detections.length) throw new Error("没有识别到可入柜的单品");
     return Response.json({ detections });
   } catch (error) {

@@ -10,6 +10,8 @@ export const wardrobeItems = sqliteTable("wardrobe_items", {
   season: text("season").notNull(),
   style: text("style").notNull(),
   status: text("status").notNull().default("available"),
+  aiTags: text("ai_tags").notNull().default("{}"),
+  tagVersion: integer("tag_version").notNull().default(0),
   imageKey: text("image_key").notNull(),
   createdAt: integer("created_at").notNull(),
 }, table => [index("idx_wardrobe_items_owner_created").on(table.ownerId, table.createdAt)]);
