@@ -8,6 +8,8 @@ type WardrobeEnv = {
 
 type Owner = { id: string; isNew: boolean };
 
+let schemaReady: Promise<void> | null = null;
+
 const itemSelect = `
   SELECT id, name, category, color_name AS colorName, color_hex AS colorHex,
          season, style, status, ai_tags AS aiTags, tag_version AS tagVersion, created_at AS createdAt
@@ -24,7 +26,7 @@ function withOwnerCookie(response: Response, owner: Owner) {
   return response;
 }
 
-async function ensureSchema(database: D1Database) {
+async function prepareSchema(database: D1Database) {
   await database.batch([
     database.prepare(`CREATE TABLE IF NOT EXISTS wardrobe_items (
       id TEXT PRIMARY KEY,
@@ -47,6 +49,16 @@ async function ensureSchema(database: D1Database) {
   const names = new Set((columns.results ?? []).map(column => column.name));
   if (!names.has("ai_tags")) await database.prepare("ALTER TABLE wardrobe_items ADD COLUMN ai_tags TEXT NOT NULL DEFAULT '{}'").run();
   if (!names.has("tag_version")) await database.prepare("ALTER TABLE wardrobe_items ADD COLUMN tag_version INTEGER NOT NULL DEFAULT 0").run();
+}
+
+async function ensureSchema(database: D1Database) {
+  if (!schemaReady) {
+    schemaReady = prepareSchema(database).catch(error => {
+      schemaReady = null;
+      throw error;
+    });
+  }
+  await schemaReady;
 }
 
 function parseTags(value: unknown, fallback: { category: string; color: string; season?: string; style?: string }) {

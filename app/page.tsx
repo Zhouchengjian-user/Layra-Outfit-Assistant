@@ -224,11 +224,18 @@ export default function Home() {
 
   const deleteWardrobeItem = async (item: WardrobeItem) => {
     if (!window.confirm(`确定从衣柜删除“${item.name}”吗？`)) return;
-    const response = await fetch(`/api/wardrobe?id=${encodeURIComponent(item.id)}`, { method: "DELETE" });
-    const payload = await response.json();
-    if (!response.ok) { notify(payload.error || "删除失败"); return; }
     setWardrobeItems(current => current.filter(value => value.id !== item.id));
     notify("衣物已从衣柜删除");
+    try {
+      const response = await fetch(`/api/wardrobe?id=${encodeURIComponent(item.id)}`, { method: "DELETE" });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "删除失败");
+    } catch (error) {
+      setWardrobeItems(current => current.some(value => value.id === item.id)
+        ? current
+        : [...current, item].sort((a, b) => b.createdAt - a.createdAt));
+      notify(error instanceof Error ? `${error.message}，衣物已恢复` : "删除失败，衣物已恢复");
+    }
   };
 
   const toggleFeedback = (lookId: number, value: Feedback) => {
