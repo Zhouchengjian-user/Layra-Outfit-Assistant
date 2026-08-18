@@ -1,8 +1,6 @@
-# vinext-starter
+# 易搭 · AI 穿搭助手
 
-A clean full-stack starter running on
-[vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and
-Drizzle support.
+面向手机 H5 的个人 AI 衣柜与穿搭助手。当前第一阶段已经实现衣物上传、浏览器端自动抠图、颜色与分类识别、信息确认、衣柜持久化，以及衣物编辑、清洗状态和删除。
 
 ## Prerequisites
 
@@ -18,14 +16,25 @@ npm run build
 
 This starter does not use `wrangler.jsonc`.
 
-## Included Shape
+## 第一阶段功能
 
-- edit site code under `app/`
-- `.openai/hosting.json` declares optional Sites D1 and R2 bindings
-- `vite.config.ts` simulates declared bindings for local development
-- `db/schema.ts` starts intentionally empty
-- `examples/d1/` contains an optional D1 example surface
-- `drizzle.config.ts` supports local migration generation when needed
+- 单次上传 1–5 张衣物照片，支持手机相册和拍照入口
+- 在用户设备上完成背景移除，上传透明 PNG
+- 自动识别主要颜色、基础分类、季节和风格标签
+- 保存前确认和修改识别结果
+- D1 保存衣物信息，R2 保存处理后的衣物图片
+- 按分类浏览，编辑单品，标记清洗和删除
+
+抠图第一版针对背景干净、与衣物颜色对比明显的照片效果最好。复杂场景的人像分割模型会在后续阶段接入。
+
+## 主要目录
+
+- `app/page.tsx`：H5 与桌面端主要交互
+- `app/lib/garment-image.ts`：浏览器端抠图与标签识别
+- `app/api/wardrobe/route.ts`：衣柜读写与图片访问接口
+- `db/schema.ts`：衣柜数据结构
+- `drizzle/`：数据库迁移
+- `.openai/hosting.json`：Sites 数据与文件存储绑定
 
 ## Workspace Auth Headers
 
