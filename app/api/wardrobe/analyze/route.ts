@@ -169,12 +169,37 @@ function boxIou(a: Detection, b: Detection) {
   return intersection / Math.max(1, union);
 }
 
+function boxArea(item: Detection) {
+  const [x1, y1, x2, y2] = item.bbox_2d;
+  return Math.max(1, (x2 - x1) * (y2 - y1));
+}
+
+function overlapOfSmaller(a: Detection, b: Detection) {
+  const [x1, y1, x2, y2] = a.bbox_2d;
+  const [bx1, by1, bx2, by2] = b.bbox_2d;
+  const intersection = Math.max(0, Math.min(x2, bx2) - Math.max(x1, bx1)) * Math.max(0, Math.min(y2, by2) - Math.max(y1, by1));
+  return intersection / Math.min(boxArea(a), boxArea(b));
+}
+
+function isSameFootwearObject(a: Detection, b: Detection) {
+  return a.category === "鞋子" && b.category === "鞋子" && (boxIou(a, b) > 0.28 || overlapOfSmaller(a, b) > 0.62);
+}
+
+function deduplicateShoes(items: Detection[]) {
+  const shoes = items.filter(item => item.category === "鞋子").sort((a, b) => boxArea(b) - boxArea(a));
+  const uniqueShoes: Detection[] = [];
+  for (const shoe of shoes) {
+    if (!uniqueShoes.some(candidate => isSameFootwearObject(candidate, shoe))) uniqueShoes.push(shoe);
+  }
+  return [...items.filter(item => item.category !== "鞋子"), ...uniqueShoes];
+}
+
 function addMissingShoes(items: Detection[], shoes: Detection[]) {
   const merged = [...items];
   for (const shoe of shoes.filter(item => item.category === "鞋子")) {
-    if (!merged.some(item => item.category === "鞋子" && boxIou(item, shoe) > 0.35)) merged.push(shoe);
+    if (!merged.some(item => isSameFootwearObject(item, shoe))) merged.push(shoe);
   }
-  return merged;
+  return deduplicateShoes(merged);
 }
 
 export async function POST(request: Request) {

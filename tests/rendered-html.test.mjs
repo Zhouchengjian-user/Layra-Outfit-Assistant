@@ -52,6 +52,8 @@ test("includes the phase-one wardrobe workflow and durable storage", async () =>
   assert.match(analyzer, /removeItemsHiddenByOuterwear/);
   assert.match(analyzer, /shoePrompt/);
   assert.match(analyzer, /addMissingShoes/);
+  assert.match(analyzer, /deduplicateShoes/);
+  assert.match(analyzer, /overlapOfSmaller/);
   assert.match(cutout, /SegmentCloth/);
   assert.match(cutout, /SegmentCommodity/);
   assert.match(productizer, /qwen-image-2.0/);
