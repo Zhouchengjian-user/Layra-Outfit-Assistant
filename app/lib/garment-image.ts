@@ -11,6 +11,15 @@ export type ProcessedGarmentImage = {
   cutoutQuality: "good" | "review";
 };
 
+type GarmentDetection = {
+  id: number;
+  category: string;
+  color: string;
+  bbox_2d: [number, number, number, number];
+  partially_occluded: boolean;
+  recommended_api: "SegmentCloth" | "SegmentCommodity";
+};
+
 type RGB = { r: number; g: number; b: number };
 
 const colorPalette: Array<{ name: string; hex: string; rgb: RGB }> = [
@@ -57,6 +66,123 @@ function inferCategory(filename: string, width: number, height: number) {
 
 function canvasToBlob(canvas: HTMLCanvasElement) {
   return new Promise<Blob>((resolve, reject) => canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error("图片处理失败")), "image/png", 0.92));
+}
+
+function canvasToJpegBlob(canvas: HTMLCanvasElement, quality = 0.9) {
+  return new Promise<Blob>((resolve, reject) => canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error("图片处理失败")), "image/jpeg", quality));
+}
+
+function displayCategory(category: string) {
+  if (["裤子", "裙子"].includes(category)) return "下装";
+  if (category === "连衣裙") return "连衣裙";
+  if (category === "鞋子") return "鞋履";
+  if (category === "帽子") return "帽子";
+  if (["包", "首饰", "其他配饰"].includes(category)) return "配饰";
+  return "上衣";
+}
+
+function colorForName(name: string) {
+  const exact = colorPalette.find(color => name.includes(color.name) || color.name.includes(name));
+  if (exact) return exact;
+  if (/灰/.test(name)) return colorPalette.find(color => color.name === "浅灰")!;
+  if (/白/.test(name)) return colorPalette.find(color => color.name === "白色")!;
+  if (/黑/.test(name)) return colorPalette.find(color => color.name === "黑色")!;
+  if (/蓝/.test(name)) return colorPalette.find(color => color.name === "蓝色")!;
+  if (/绿/.test(name)) return colorPalette.find(color => color.name === "绿色")!;
+  if (/棕|咖|焦糖/.test(name)) return colorPalette.find(color => color.name === "棕色")!;
+  if (/粉/.test(name)) return colorPalette.find(color => color.name === "粉色")!;
+  if (/红/.test(name)) return colorPalette.find(color => color.name === "红色")!;
+  return { name: name || "未识别", hex: "#999999", rgb: { r: 153, g: 153, b: 153 } };
+}
+
+async function createAnalysisBlob(file: File) {
+  const bitmap = await createImageBitmap(file);
+  const scale = Math.min(1, 1600 / Math.max(bitmap.width, bitmap.height));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+  canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+  canvas.getContext("2d")?.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  bitmap.close();
+  return canvasToJpegBlob(canvas, 0.86);
+}
+
+async function cropDetection(file: File, box: [number, number, number, number]) {
+  const bitmap = await createImageBitmap(file);
+  const [x1, y1, x2, y2] = box;
+  const rawX = x1 / 1000 * bitmap.width;
+  const rawY = y1 / 1000 * bitmap.height;
+  const rawW = Math.max(1, (x2 - x1) / 1000 * bitmap.width);
+  const rawH = Math.max(1, (y2 - y1) / 1000 * bitmap.height);
+  const padding = Math.max(rawW, rawH) * 0.055;
+  const sourceX = Math.max(0, Math.floor(rawX - padding));
+  const sourceY = Math.max(0, Math.floor(rawY - padding));
+  const sourceW = Math.min(bitmap.width - sourceX, Math.ceil(rawW + padding * 2));
+  const sourceH = Math.min(bitmap.height - sourceY, Math.ceil(rawH + padding * 2));
+  const scale = Math.min(1, 1600 / Math.max(sourceW, sourceH));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(sourceW * scale));
+  canvas.height = Math.max(1, Math.round(sourceH * scale));
+  canvas.getContext("2d")?.drawImage(bitmap, sourceX, sourceY, sourceW, sourceH, 0, 0, canvas.width, canvas.height);
+  bitmap.close();
+  return canvasToJpegBlob(canvas, 0.9);
+}
+
+async function analyzeGarments(file: File) {
+  const form = new FormData();
+  form.append("image", await createAnalysisBlob(file), "wardrobe-analysis.jpg");
+  const response = await fetch("/api/wardrobe/analyze", { method: "POST", body: form });
+  const payload = await response.json() as { detections?: GarmentDetection[]; error?: string };
+  if (!response.ok || !payload.detections?.length) throw new Error(payload.error || "没有识别到单品");
+  return payload.detections;
+}
+
+async function cutoutGarment(blob: Blob, api: GarmentDetection["recommended_api"]) {
+  const form = new FormData();
+  form.append("image", blob, "garment.jpg");
+  form.append("api", api);
+  const response = await fetch("/api/wardrobe/cutout", { method: "POST", body: form });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({})) as { error?: string };
+    throw new Error(payload.error || "单品抠图失败");
+  }
+  return response.blob();
+}
+
+export async function processGarmentUpload(file: File): Promise<ProcessedGarmentImage[]> {
+  let detections: GarmentDetection[];
+  try {
+    detections = await analyzeGarments(file);
+  } catch {
+    return [await processGarmentImage(file)];
+  }
+
+  const results: ProcessedGarmentImage[] = [];
+  for (const detection of detections) {
+    const sourceBlob = await cropDetection(file, detection.bbox_2d);
+    let blob = sourceBlob;
+    let cutoutQuality: ProcessedGarmentImage["cutoutQuality"] = "review";
+    try {
+      blob = await cutoutGarment(sourceBlob, detection.recommended_api);
+      cutoutQuality = detection.partially_occluded ? "review" : "good";
+    } catch {
+      // Keep the detected crop so the user can still confirm or discard it.
+    }
+    const category = displayCategory(detection.category);
+    const color = colorForName(detection.color);
+    results.push({
+      blob,
+      previewUrl: URL.createObjectURL(blob),
+      originalUrl: URL.createObjectURL(sourceBlob),
+      category,
+      colorName: color.name,
+      colorHex: color.hex,
+      season: "四季",
+      style: "简约",
+      name: `${color.name}${detection.category}`,
+      cutoutQuality,
+    });
+  }
+  return results.length ? results : [await processGarmentImage(file)];
 }
 
 export async function processGarmentImage(file: File): Promise<ProcessedGarmentImage> {

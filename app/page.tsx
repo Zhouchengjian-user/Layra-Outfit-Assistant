@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { processGarmentImage, type ProcessedGarmentImage } from "./lib/garment-image";
+import { processGarmentUpload, type ProcessedGarmentImage } from "./lib/garment-image";
 
 type Tab = "home" | "wardrobe" | "create" | "inspiration" | "profile";
 type Scene = "通勤" | "约会" | "休闲" | "聚会" | "运动" | "正式活动";
@@ -94,6 +94,7 @@ export default function Home() {
   const [uploadProcessing, setUploadProcessing] = useState(false);
   const [uploadSaving, setUploadSaving] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadTotal, setUploadTotal] = useState(0);
   const [garmentDrafts, setGarmentDrafts] = useState<GarmentDraft[]>([]);
   const [editingWardrobe, setEditingWardrobe] = useState<WardrobeItem | null>(null);
   const [closetFilter, setClosetFilter] = useState("全部");
@@ -153,11 +154,12 @@ export default function Home() {
     setUploadOpen(true);
     setUploadProcessing(true);
     setUploadProgress(0);
-    setGarmentDrafts([]);
+    setUploadTotal(selected.length);
+    if (!uploadOpen) setGarmentDrafts([]);
     try {
       for (let index = 0; index < selected.length; index++) {
-        const processed = await processGarmentImage(selected[index]);
-        setGarmentDrafts(current => [...current, { ...processed, id: crypto.randomUUID(), selected: true }]);
+        const processedItems = await processGarmentUpload(selected[index]);
+        setGarmentDrafts(current => [...current, ...processedItems.map(processed => ({ ...processed, id: crypto.randomUUID(), selected: true }))]);
         setUploadProgress(index + 1);
       }
     } catch {
@@ -186,7 +188,8 @@ export default function Home() {
     try {
       for (const draft of selected) {
         const form = new FormData();
-        form.append("image", draft.blob, `${draft.id}.png`);
+        const extension = draft.blob.type === "image/jpeg" ? "jpg" : "png";
+        form.append("image", draft.blob, `${draft.id}.${extension}`);
         form.append("name", draft.name);
         form.append("category", draft.category);
         form.append("colorName", draft.colorName);
@@ -316,7 +319,7 @@ export default function Home() {
         {tab === "wardrobe" && <div className="screen wardrobe-screen">
           <header className="sub-header"><div><span className="micro-label">MY CLOSET</span><h2>我的衣柜 <sup>{wardrobeItems.length}</sup></h2><p>把真实衣服整理好，之后的搭配才会真正属于你。</p></div><button className="round-add" onClick={() => fileRef.current?.click()} aria-label="上传衣物">+</button></header>
           <div className="closet-status"><span><b>{wardrobeItems.filter(item => item.status === "available").length}</b> 件可穿</span><span><b>{wardrobeItems.filter(item => item.status === "washing").length}</b> 件清洗中</span><span><b>{new Set(wardrobeItems.flatMap(item => [item.category, item.colorName])).size}</b> 个自动标签</span></div>
-          <button className="upload-zone" onClick={() => fileRef.current?.click()}><span className="upload-icon"><Icon name="camera" /></span><span><b>拍照或从相册上传衣物</b><small>自动抠图、识别分类与颜色，确认后加入衣柜</small><em>建议使用干净、对比明显的背景 · 单次最多 5 件</em></span><strong>开始上传 →</strong></button>
+          <button className="upload-zone" onClick={() => fileRef.current?.click()}><span className="upload-icon"><Icon name="camera" /></span><span><b>拍照或从相册上传衣物</b><small>自动逐件识别、抠图与整理标签，确认后加入衣柜</small><em>一张图可包含多件单品 · 单次最多 5 张</em></span><strong>开始上传 →</strong></button>
           <div className="wardrobe-toolbar"><div className="filter-row">{filters.map(filter => <button key={filter} className={closetFilter === filter ? "active" : ""} onClick={() => setClosetFilter(filter)}>{filter}</button>)}</div><span>{closetFilter === "全部" ? "全部单品" : closetFilter} · {filteredWardrobe.length}</span></div>
           {wardrobeLoading ? <div className="wardrobe-loading"><span className="spinner" /> 正在同步衣柜…</div> : filteredWardrobe.length ? <div className="wardrobe-grid saved-wardrobe-grid">
             {filteredWardrobe.map(item => <article className={`wardrobe-item saved-garment ${item.status === "washing" ? "is-washing" : ""}`} key={item.id}><div className="uploaded-wrap transparent-grid"><img src={item.imageUrl} alt={item.name} loading="lazy" /><span className="ai-tag">{item.status === "washing" ? "清洗中" : "已入柜"}</span><i className="garment-color-dot" style={{ background: item.colorHex }} /></div><b>{item.name}</b><small>{item.colorName} · {item.category} · {item.season}</small><div className="wardrobe-actions"><button onClick={() => setEditingWardrobe(item)}>编辑</button><button onClick={() => updateWardrobeItem(item.id, { status: item.status === "washing" ? "available" : "washing" })}>{item.status === "washing" ? "恢复可穿" : "标记清洗"}</button><button onClick={() => deleteWardrobeItem(item)}>删除</button></div></article>)}
@@ -352,8 +355,8 @@ export default function Home() {
 
       {showReview && <div className="modal-backdrop" onClick={() => setShowReview(false)}><section className="modal review-modal" onClick={event => event.stopPropagation()}><button className="modal-close" onClick={() => setShowReview(false)}>×</button><span className="review-score">88<small>分</small></span><span className="micro-label">AI OUTFIT REVIEW</span><h3>好看，而且挺像你。</h3><p>奶油白和炭灰很稳，焦糖色鞋子刚好把整套提暖了一点。比例也舒服，通勤穿完全没问题。</p><div className="review-notes"><div><b>颜色协调</b><span>柔和耐看，焦糖色是亮点</span></div><div><b>版型比例</b><span>上短下长，很显腿长</span></div><div><b>天气场合</b><span>适合 20–28℃ 通勤场景</span></div><div><b>可以更好</b><span>如果添一条细皮带，层次会更完整</span></div></div><button onClick={() => { setShowReview(false); setSelectedLook(1); setShowModel(true); }}>生成 AI 模特效果图</button></section></div>}
 
-      {uploadOpen && <div className="modal-backdrop upload-backdrop" onClick={() => { if (!uploadProcessing && !uploadSaving) closeUpload(); }}><section className="modal upload-modal" onClick={event => event.stopPropagation()}><button className="modal-close" disabled={uploadSaving} onClick={closeUpload}>×</button><header className="upload-modal-head"><span className="micro-label">SMART WARDROBE IMPORT</span><h3>{uploadProcessing ? "易搭正在整理衣物" : "确认后加入衣柜"}</h3><p>{uploadProcessing ? `正在抠图并识别标签 ${uploadProgress} / ${Math.max(uploadProgress, garmentDrafts.length, 1)}` : `已处理 ${garmentDrafts.length} 件，名称和标签都可以修改`}</p></header>
-        {uploadProcessing && <div className="cutout-progress"><div className="cutout-animation"><span /><i /><b>背景处理中</b></div><p>图片只在本机完成抠图，处理后的透明图才会保存。</p></div>}
+      {uploadOpen && <div className="modal-backdrop upload-backdrop" onClick={() => { if (!uploadProcessing && !uploadSaving) closeUpload(); }}><section className="modal upload-modal" onClick={event => event.stopPropagation()}><button className="modal-close" disabled={uploadSaving} onClick={closeUpload}>×</button><header className="upload-modal-head"><span className="micro-label">SMART WARDROBE IMPORT</span><h3>{uploadProcessing ? "易搭正在逐件整理" : "确认后加入衣柜"}</h3><p>{uploadProcessing ? `正在识别并抠图 ${uploadProgress} / ${Math.max(uploadTotal, 1)} 张` : `已识别 ${garmentDrafts.length} 件单品，名称和标签都可以修改`}</p></header>
+        {uploadProcessing && <div className="cutout-progress"><div className="cutout-animation"><span /><i /><b>单品处理中</b></div><p>原图仅用于识别与抠图，只有你确认的白底单品图会加入衣柜。</p></div>}
         {!!garmentDrafts.length && <div className="draft-grid">{garmentDrafts.map(draft => <article className={`garment-draft ${draft.selected ? "selected" : ""}`} key={draft.id}><button className="draft-select" onClick={() => updateGarmentDraft(draft.id, { selected: !draft.selected })}>{draft.selected ? "✓ 保存" : "不保存"}</button><div className="draft-preview transparent-grid"><img src={draft.previewUrl} alt={draft.name} />{draft.cutoutQuality === "review" && <span>建议确认边缘</span>}</div><label>衣物名称<input value={draft.name} onChange={event => updateGarmentDraft(draft.id, { name: event.target.value })} /></label><div className="draft-fields"><label>分类<select value={draft.category} onChange={event => updateGarmentDraft(draft.id, { category: event.target.value })}>{["上衣", "下装", "连衣裙", "鞋履", "配饰", "帽子"].map(value => <option key={value}>{value}</option>)}</select></label><label>季节<select value={draft.season} onChange={event => updateGarmentDraft(draft.id, { season: event.target.value })}>{["四季", "春秋", "夏季", "冬季"].map(value => <option key={value}>{value}</option>)}</select></label></div><div className="recognized-tags"><span><i style={{ background: draft.colorHex }} />{draft.colorName}</span><span>{draft.style}</span><span>已自动抠图</span></div></article>)}</div>}
         {!uploadProcessing && <footer className="upload-modal-foot"><button className="secondary-upload" onClick={() => fileRef.current?.click()}>＋ 继续添加</button><button className="primary-upload" disabled={uploadSaving || !garmentDrafts.some(item => item.selected)} onClick={saveGarmentDrafts}>{uploadSaving ? "正在加入衣柜…" : `加入衣柜（${garmentDrafts.filter(item => item.selected).length}）`}</button></footer>}
       </section></div>}

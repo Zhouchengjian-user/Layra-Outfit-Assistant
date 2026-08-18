@@ -81,7 +81,9 @@ export async function POST(request: Request) {
     if (!(image instanceof File) || !image.type.startsWith("image/")) return json({ error: "请选择衣物图片" }, owner, 400);
     if (image.size > 12 * 1024 * 1024) return json({ error: "单张图片不能超过 12MB" }, owner, 400);
     const id = crypto.randomUUID();
-    const imageKey = `${owner.id}/${id}.png`;
+    const contentType = image.type === "image/jpeg" ? "image/jpeg" : "image/png";
+    const extension = contentType === "image/jpeg" ? "jpg" : "png";
+    const imageKey = `${owner.id}/${id}.${extension}`;
     const createdAt = Date.now();
     const value = (key: string, fallback: string) => String(form.get(key) || fallback).trim().slice(0, 40);
     const item = {
@@ -96,7 +98,7 @@ export async function POST(request: Request) {
       createdAt,
       imageUrl: `/api/wardrobe?image=${id}`,
     };
-    await storage.WARDROBE_IMAGES.put(imageKey, image.stream(), { httpMetadata: { contentType: "image/png" } });
+    await storage.WARDROBE_IMAGES.put(imageKey, image.stream(), { httpMetadata: { contentType } });
     await storage.DB.prepare(`INSERT INTO wardrobe_items
       (id, owner_id, name, category, color_name, color_hex, season, style, status, image_key, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
