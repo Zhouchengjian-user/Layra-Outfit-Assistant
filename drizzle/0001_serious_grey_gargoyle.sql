@@ -1,1 +1,0 @@
-CREATE INDEX `idx_wardrobe_items_owner_created` ON `wardrobe_items` (`owner_id`,`created_at`);

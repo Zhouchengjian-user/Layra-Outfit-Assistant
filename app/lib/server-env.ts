@@ -1,10 +1,6 @@
-import { env } from "cloudflare:workers";
-
 export function getServerEnv(name: string) {
-  const workerValue = (env as Record<string, unknown>)[name];
-  if (typeof workerValue === "string" && workerValue.trim()) return workerValue.trim();
-  const nodeValue = process.env[name];
-  return typeof nodeValue === "string" ? nodeValue.trim() : "";
+  const value = process.env[name];
+  return typeof value === "string" ? value.trim() : "";
 }
 
 export function requireServerEnv(name: string) {

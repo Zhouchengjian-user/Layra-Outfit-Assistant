@@ -1,10 +1,7 @@
-import { env } from "cloudflare:workers";
 import { callImageSeg, getImageSegResultUrl } from "../../../lib/alibaba-imageseg";
-
-type CutoutEnv = { WARDROBE_IMAGES: R2Bucket };
+import { storageDelete, storagePut } from "../../../lib/storage";
 
 export async function POST(request: Request) {
-  const storage = env as unknown as CutoutEnv;
   const token = crypto.randomUUID();
   const imageKey = `processing/${token}`;
   try {
@@ -18,7 +15,7 @@ export async function POST(request: Request) {
     if (image.size > 3 * 1024 * 1024) {
       return Response.json({ error: "单品图片不能超过 3MB" }, { status: 400 });
     }
-    await storage.WARDROBE_IMAGES.put(imageKey, image.stream(), { httpMetadata: { contentType: image.type || "image/jpeg" } });
+    await storagePut(imageKey, image.stream(), image.type || "image/jpeg");
     const imageUrl = new URL(`/api/wardrobe/source?token=${token}`, request.url).toString();
 
     let resultUrl = "";
@@ -48,6 +45,6 @@ export async function POST(request: Request) {
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : "单品抠图失败" }, { status: 500 });
   } finally {
-    await storage.WARDROBE_IMAGES.delete(imageKey).catch(() => undefined);
+    await storageDelete(imageKey).catch(() => undefined);
   }
 }

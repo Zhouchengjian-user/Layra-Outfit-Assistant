@@ -1,13 +1,32 @@
-import { env } from "cloudflare:workers";
 import { getServerEnv, requireServerEnv } from "../../../lib/server-env";
 import { getOwner, ownerJson } from "../../../lib/owner";
+import { dbAll } from "../../../lib/db";
+import {
+  completeAiTask,
+  ensureAiTaskSchema,
+  failAiTask,
+  getAiTask,
+  readIdempotencyKey,
+  startAiTask,
+  taskPayload,
+} from "../../../lib/ai-tasks";
+import { normalizeGarmentAITags } from "../../../lib/garment-tags";
+import {
+  buildOutfitCandidates,
+  selectDiverseCandidates,
+  type OutfitCandidate,
+  type StyleIntensity,
+  type StylingIntent,
+  type WardrobeMatchItem,
+} from "../../../lib/outfit-engine";
 
-type OutfitEnv = { DB: D1Database };
 type WardrobeRow = {
   id: string; name: string; category: string; colorName: string; season: string; style: string; aiTags: string;
 };
-type Intent = { occasion: string; style: string[]; warmth: number; formality: number; colorPreference: string; requirements: string[] };
-type Recommendation = { id: string; title: string; reason: string; score: number; itemIds: string[]; highlights: string[]; missingSuggestion?: string };
+type Recommendation = {
+  id: string; title: string; reason: string; score: number; itemIds: string[]; highlights: string[];
+  scoreBreakdown: OutfitCandidate["scoreBreakdown"]; missingSuggestion?: string;
+};
 
 function parseJsonObject(content: string) {
   const stripped = content.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
@@ -29,122 +48,194 @@ function sanitizeDisplayText(value: unknown, items: WardrobeRow[], fallback = ""
     .trim();
 }
 
-function itemLayer(item: WardrobeRow) {
-  if (["裤子", "裙子", "下装"].includes(item.category)) return "bottom";
-  if (item.category === "连衣裙") return "dress";
-  if (["鞋子", "鞋履"].includes(item.category)) return "shoes";
-  if (item.category === "外套") return "outer";
-  if (["帽子", "腰带", "包", "首饰", "配饰", "其他配饰"].includes(item.category)) return "accessory";
-  return "top";
+function candidateForModel(candidate: OutfitCandidate) {
+  return {
+    candidateId: candidate.id,
+    baseScore: candidate.score,
+    scoreBreakdown: candidate.scoreBreakdown,
+    highlights: candidate.highlights,
+    items: candidate.items.map(item => ({
+      name: item.name,
+      category: item.category,
+      color: item.colorName,
+      subcategory: item.aiTags.subcategory,
+      material: item.aiTags.material,
+      pattern: item.aiTags.pattern,
+      fit: item.aiTags.fit,
+      length: item.aiTags.length,
+      silhouette: item.aiTags.silhouette,
+      role: item.aiTags.role,
+    })),
+  };
 }
 
-function fallbackRecommendations(items: WardrobeRow[], scene: string): Recommendation[] {
-  const groups = new Map<string, WardrobeRow[]>();
-  for (const item of items) groups.set(itemLayer(item), [...(groups.get(itemLayer(item)) || []), item]);
-  const pick = (layer: string, index: number) => {
-    const options = groups.get(layer) || [];
-    return options.length ? options[index % options.length] : null;
+function recommendationFromCandidate(
+  candidate: OutfitCandidate,
+  look: Record<string, unknown> | undefined,
+  index: number,
+  items: WardrobeRow[],
+): Recommendation {
+  const readableNames = candidate.items.map(item => item.name).join("、");
+  return {
+    id: `look-${index + 1}`,
+    title: sanitizeDisplayText(look?.title, items, candidate.title).slice(0, 24),
+    reason: sanitizeDisplayText(
+      look?.reason,
+      items,
+      `${readableNames}在颜色、比例和场合上更协调，都是你衣柜里可以直接穿的单品。`,
+    ).slice(0, 220),
+    score: candidate.score,
+    scoreBreakdown: candidate.scoreBreakdown,
+    itemIds: candidate.itemIds,
+    highlights: Array.isArray(look?.highlights)
+      ? look.highlights.map(value => sanitizeDisplayText(value, items)).filter(Boolean).slice(0, 4)
+      : candidate.highlights,
+    missingSuggestion: sanitizeDisplayText(look?.missingSuggestion, items, candidate.missingSuggestion || "").slice(0, 80) || undefined,
   };
-  return [0, 1, 2].map(index => {
-    const selected = [pick("dress", index) || pick("top", index), pick("outer", index), pick("bottom", index), pick("shoes", index), pick("accessory", index)]
-      .filter((item): item is WardrobeRow => Boolean(item));
-    const unique = [...new Map(selected.map(item => [item.id, item])).values()];
-    return {
-      id: `look-${index + 1}`,
-      title: ["舒服有精神", "利落有层次", "轻松不费力"][index],
-      reason: `从你的衣柜里挑了 ${unique.map(item => item.name).join("、")}，适合${scene}，也方便直接照着穿。`,
-      score: 90 - index * 2,
-      itemIds: unique.map(item => item.id),
-      highlights: [scene, index === 0 ? "颜色协调" : index === 1 ? "比例利落" : "舒适耐看"],
-    };
-  });
 }
 
-function normalizeResult(value: Record<string, unknown>, items: WardrobeRow[], scene: string) {
-  const validIds = new Set(items.map(item => item.id));
-  const rawIntent = value.intent && typeof value.intent === "object" ? value.intent as Record<string, unknown> : {};
-  const intent: Intent = {
-    occasion: String(rawIntent.occasion || scene).slice(0, 16),
-    style: Array.isArray(rawIntent.style) ? rawIntent.style.map(String).slice(0, 4) : [],
-    warmth: Math.max(1, Math.min(5, Math.round(Number(rawIntent.warmth) || 3))),
-    formality: Math.max(1, Math.min(5, Math.round(Number(rawIntent.formality) || 3))),
-    colorPreference: String(rawIntent.colorPreference || "不限定").slice(0, 20),
-    requirements: Array.isArray(rawIntent.requirements) ? rawIntent.requirements.map(String).slice(0, 6) : [],
-  };
+function candidateOverlap(left: OutfitCandidate, right: OutfitCandidate) {
+  const leftIds = new Set(left.itemIds);
+  const rightIds = new Set(right.itemIds);
+  const intersection = [...leftIds].filter(id => rightIds.has(id)).length;
+  return intersection / Math.max(new Set([...leftIds, ...rightIds]).size, 1);
+}
+
+function normalizeResult(value: Record<string, unknown>, candidates: OutfitCandidate[], items: WardrobeRow[], intent: StylingIntent) {
+  const candidateMap = new Map(candidates.map(candidate => [candidate.id, candidate]));
   const rawLooks = Array.isArray(value.recommendations) ? value.recommendations : [];
-  const normalized = rawLooks.flatMap((entry, index): Recommendation[] => {
-    if (!entry || typeof entry !== "object") return [];
+  const chosen: Array<{ candidate: OutfitCandidate; look?: Record<string, unknown> }> = [];
+  for (const entry of rawLooks) {
+    if (!entry || typeof entry !== "object") continue;
     const look = entry as Record<string, unknown>;
-    const itemIds = [...new Set((Array.isArray(look.itemIds) ? look.itemIds : []).map(String).filter(id => validIds.has(id)))].slice(0, 6);
-    if (!itemIds.length) return [];
-    return [{
-      id: `look-${index + 1}`,
-      title: sanitizeDisplayText(look.title, items, `搭配方案 ${index + 1}`).slice(0, 24),
-      reason: sanitizeDisplayText(look.reason, items, "根据你的需求和衣柜标签生成").slice(0, 180),
-      score: Math.max(70, Math.min(99, Math.round(Number(look.score) || 88))),
-      itemIds,
-      highlights: Array.isArray(look.highlights) ? look.highlights.map(item => sanitizeDisplayText(item, items)).filter(Boolean).slice(0, 4) : [],
-      missingSuggestion: look.missingSuggestion ? sanitizeDisplayText(look.missingSuggestion, items).slice(0, 80) : undefined,
-    }];
-  });
-  const fallbacks = fallbackRecommendations(items, scene);
-  while (normalized.length < 3) normalized.push({ ...fallbacks[normalized.length], id: `look-${normalized.length + 1}` });
-  return { intent, recommendations: normalized.slice(0, 3) };
+    const candidate = candidateMap.get(String(look.candidateId || ""));
+    if (!candidate || chosen.some(selection => selection.candidate.id === candidate.id || candidateOverlap(selection.candidate, candidate) > .68)) continue;
+    chosen.push({ candidate, look });
+    if (chosen.length === 3) break;
+  }
+  for (const candidate of selectDiverseCandidates(candidates, 3, .68)) {
+    if (!chosen.some(selection => selection.candidate.id === candidate.id)) chosen.push({ candidate });
+    if (chosen.length === 3) break;
+  }
+  return {
+    intent,
+    recommendations: chosen.slice(0, 3).map((selection, index) => recommendationFromCandidate(selection.candidate, selection.look, index, items)),
+  };
+}
+
+function completedPayload(taskResult: string | null) {
+  if (!taskResult) throw new Error("搭配结果不完整，请重新生成");
+  return JSON.parse(taskResult) as Record<string, unknown>;
+}
+
+export async function GET(request: Request) {
+  const owner = getOwner(request);
+  try {
+    await ensureAiTaskSchema();
+    const taskId = new URL(request.url).searchParams.get("taskId") || "";
+    const task = await getAiTask(owner.id, "outfit-recommendation", taskId);
+    if (!task) return ownerJson({ error: "没有找到这次搭配任务" }, owner, 404);
+    if (task.status === "succeeded") return ownerJson({ ...completedPayload(task.resultJson), task: taskPayload(task) }, owner);
+    if (task.status === "failed") return ownerJson({ task: taskPayload(task), error: task.errorMessage || "搭配生成失败" }, owner, 409);
+    return ownerJson({ task: taskPayload(task) }, owner, 202);
+  } catch (error) {
+    return ownerJson({ error: error instanceof Error ? error.message : "搭配任务查询失败" }, owner, 500);
+  }
 }
 
 export async function POST(request: Request) {
   const owner = getOwner(request);
-  const storage = env as unknown as OutfitEnv;
+  const idempotencyKey = readIdempotencyKey(request);
+  if (!idempotencyKey) return ownerJson({ error: "请刷新页面后重新提交", code: "INVALID_IDEMPOTENCY_KEY" }, owner, 400);
+  let taskId = "";
   try {
-    const body = await request.json() as { prompt?: string; scene?: string; weather?: Record<string, unknown>; profile?: Record<string, unknown> };
+    await ensureAiTaskSchema();
+    const existing = await getAiTask(owner.id, "outfit-recommendation", idempotencyKey);
+    if (existing?.status === "succeeded") return ownerJson({ ...completedPayload(existing.resultJson), task: taskPayload(existing) }, owner);
+    if (existing?.status === "failed") return ownerJson({ task: taskPayload(existing), error: existing.errorMessage || "上次搭配生成失败，请点击重试" }, owner, 409);
+    if (existing) return ownerJson({ task: taskPayload(existing) }, owner, 202);
+    const body = await request.json() as {
+      prompt?: string; scene?: string; weather?: Record<string, unknown>; profile?: Record<string, unknown>; intensity?: StyleIntensity;
+    };
     const scene = String(body.scene || "通勤").slice(0, 16);
-    const result = await storage.DB.prepare(`SELECT id, name, category, color_name AS colorName, season, style, ai_tags AS aiTags
-      FROM wardrobe_items WHERE owner_id = ? AND status = 'available' ORDER BY created_at DESC LIMIT 160`)
-      .bind(owner.id).all<WardrobeRow>();
-    const items = result.results || [];
+    const prompt = String(body.prompt || "请推荐今天的穿搭").slice(0, 300);
+    const items = await dbAll<WardrobeRow>(`SELECT id, name, category, color_name AS colorName, season, style, ai_tags AS aiTags
+      FROM wardrobe_items WHERE owner_id = ? AND status = 'available' ORDER BY created_at DESC LIMIT 240`, [owner.id]);
     if (items.length < 2) return ownerJson({ error: "衣柜里至少需要 2 件可穿单品，先去添加衣服吧" }, owner, 400);
+
+    const wardrobe: WardrobeMatchItem[] = items.map(item => {
+      let parsed: unknown = {};
+      try { parsed = JSON.parse(item.aiTags || "{}"); } catch { parsed = {}; }
+      return {
+        ...item,
+        aiTags: normalizeGarmentAITags(parsed, { category: item.category, color: item.colorName, season: item.season, style: item.style }),
+      };
+    });
+    const { intent, candidates } = buildOutfitCandidates(wardrobe, {
+      scene,
+      prompt,
+      weather: body.weather,
+      profile: body.profile,
+      intensity: body.intensity,
+    });
+    if (!candidates.length) return ownerJson({ error: "衣柜暂时组合不出完整穿搭，请至少添加上装、下装或连衣裙" }, owner, 400);
+
+    const started = await startAiTask(owner.id, "outfit-recommendation", idempotencyKey, JSON.stringify({ ...body, scene, prompt }));
+    taskId = started.task.id;
+    if (!started.created) {
+      if (started.task.status === "succeeded") return ownerJson({ ...completedPayload(started.task.resultJson), task: taskPayload(started.task) }, owner);
+      if (started.task.status === "failed") return ownerJson({ task: taskPayload(started.task), error: started.task.errorMessage || "上次搭配生成失败，请点击重试" }, owner, 409);
+      return ownerJson({ task: taskPayload(started.task) }, owner, 202);
+    }
 
     const apiKey = requireServerEnv("DASHSCOPE_API_KEY");
     const baseUrl = (getServerEnv("DASHSCOPE_BASE_URL") || "https://dashscope.aliyuncs.com/compatible-mode/v1").replace(/\/$/, "");
     const model = getServerEnv("DASHSCOPE_VISION_MODEL") || "qwen3-vl-flash";
-    const wardrobe = items.map(item => ({
-      id: item.id, name: item.name, category: item.category, color: item.colorName, season: item.season, style: item.style,
-      tags: (() => { try { return JSON.parse(item.aiTags || "{}"); } catch { return {}; } })(),
-    }));
     const response = await fetch(`${baseUrl}/chat/completions`, {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
-        model, temperature: 0.25, enable_thinking: false, max_tokens: 1600,
-        messages: [{ role: "user", content: `你是易搭的穿搭决策模型。先理解用户意图，再只使用给定衣柜中的单品生成3套可直接穿的搭配。
-场合：${scene}
-用户需求：${String(body.prompt || "请推荐今天的穿搭").slice(0, 300)}
-天气：${JSON.stringify(body.weather || {})}
-用户信息：${JSON.stringify(body.profile || {})}
-衣柜：${JSON.stringify(wardrobe)}
+        model,
+        temperature: 0.2,
+        enable_thinking: false,
+        max_tokens: 900,
+        messages: [{ role: "user", content: `你是易搭的时装编辑。系统已经按颜色、版型、天气、场合和偏好计算出候选搭配，你只负责从候选中挑出三套最有审美、且彼此有差异的方案，不得新增、删除或替换候选里的单品。
 
-规则：
-1. itemIds只能使用衣柜中真实存在的id，绝不虚构单品；每套优先形成上装/外套+下装+鞋，或连衣裙+鞋，可按需加入配饰。
-2. 三套要有明显差异，同时满足天气、场合、舒适度、颜色协调和版型比例。
-3. reason像朋友一样轻松，说明为什么适合；缺少关键品类时仍只用衣柜现有单品，并在missingSuggestion中给出可选添置建议。
-4. itemIds只用于机器选品。title、reason、highlights、missingSuggestion等所有给用户阅读的文字严禁出现id、UUID或任何内部编号，只写自然的衣物名称。
-5. 只返回严格JSON对象：{"intent":{"occasion":"","style":[],"warmth":3,"formality":3,"colorPreference":"","requirements":[]},"recommendations":[{"title":"","reason":"","score":90,"itemIds":[],"highlights":[],"missingSuggestion":""}]}。` }],
+用户需求：${prompt}
+场合：${scene}
+穿搭力度：${intent.intensity}
+结构化意图：${JSON.stringify(intent)}
+候选搭配：${JSON.stringify(candidates.map(candidateForModel))}
+
+选稿规则：
+1. 第一套是最适合当前需求的稳妥优选；第二套要比第一套更有层次或色彩记忆点；第三套允许更有风格，但仍能实际穿出门。
+2. 三套不能只是更换一个配饰；核心上装、下装、连衣裙或外套应有明显差异。若衣柜很小，优先保证真实可穿。
+3. 穿搭中最多一个强主角，其他单品负责衔接；兼顾上松下收或上短下长等比例关系。
+4. reason 用朋友口吻，说明颜色、比例、天气和场合，不提分数、算法、编号或 UUID。
+5. 只返回严格JSON对象：{"recommendations":[{"candidateId":"candidate-01","title":"","reason":"","highlights":[],"missingSuggestion":""}]}。` }],
       }),
       signal: AbortSignal.timeout(60_000),
     });
     const payload = await response.json() as { choices?: Array<{ message?: { content?: string } }>; error?: { message?: string } };
     if (!response.ok) throw new Error(payload.error?.message || "AI 搭配暂时不可用");
-    const content = payload.choices?.[0]?.message?.content || "";
-    const normalized = normalizeResult(parseJsonObject(content), items, scene);
+    const normalized = normalizeResult(parseJsonObject(payload.choices?.[0]?.message?.content || ""), candidates, items, intent);
     const itemMap = new Map(items.map(item => [item.id, item]));
-    return ownerJson({
+    const resultPayload = {
       ...normalized,
       recommendations: normalized.recommendations.map(look => ({
         ...look,
-        items: look.itemIds.map(id => itemMap.get(id)).filter(Boolean).map(item => ({ ...item, aiTags: undefined, imageUrl: `/api/wardrobe?image=${item!.id}` })),
+        items: look.itemIds.map(id => itemMap.get(id)).filter(Boolean).map(item => ({
+          ...item,
+          aiTags: undefined,
+          imageUrl: `/api/wardrobe?image=${item!.id}`,
+        })),
       })),
-    }, owner);
+    };
+    await completeAiTask(taskId, { resultJson: JSON.stringify(resultPayload) });
+    return ownerJson({ ...resultPayload, task: { id: taskId, kind: "outfit-recommendation", status: "succeeded", updatedAt: Date.now() } }, owner);
   } catch (error) {
-    return ownerJson({ error: error instanceof Error ? error.message : "搭配生成失败" }, owner, 500);
+    const message = error instanceof Error ? error.message : "搭配生成失败";
+    if (taskId) await failAiTask(taskId, message).catch(() => undefined);
+    return ownerJson({ error: message, task: taskId ? { id: taskId, status: "failed" } : undefined }, owner, 500);
   }
 }

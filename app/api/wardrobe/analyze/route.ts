@@ -9,6 +9,9 @@ type Detection = {
   recommended_api: "SegmentCloth" | "SegmentCommodity";
   confidence?: number;
   visible_ratio?: number;
+  identity_key?: string;
+  source_evidence?: string;
+  depiction_type?: "worn" | "product" | "unknown";
 };
 
 const allowedCategories = new Set(["上衣", "外套", "裤子", "裙子", "连衣裙", "鞋子", "帽子", "腰带", "包", "首饰", "其他配饰"]);
@@ -23,6 +26,12 @@ const colorAliases: Record<string, string> = {
 function normalizeColor(value: unknown) {
   const color = String(value || "未识别").trim().toLowerCase();
   return (colorAliases[color] || color).slice(0, 16);
+}
+
+function normalizeIdentityKey(value: unknown) {
+  const key = String(value || "").trim().toLowerCase().replace(/[\s_]+/g, "-").replace(/[^\p{L}\p{N}-]/gu, "").slice(0, 64);
+  if (!key || /^(?:item|object|garment|cloth|单品|衣物)-?\d*$/i.test(key)) return "";
+  return key;
 }
 
 function mergePairs(items: Detection[]) {
@@ -85,29 +94,38 @@ function parseJsonContent(content: string) {
 }
 
 async function requestDetections(baseUrl: string, apiKey: string, model: string, imageData: string, prompt: string) {
-  const response = await fetch(`${baseUrl}/chat/completions`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model,
-      temperature: 0.1,
-      enable_thinking: false,
-      messages: [{ role: "user", content: [
-        { type: "image_url", image_url: { url: imageData } },
-        { type: "text", text: prompt },
-      ] }],
-    }),
-    signal: AbortSignal.timeout(60_000),
-  });
-  const payload = await response.json() as Record<string, unknown>;
-  if (!response.ok) {
-    const message = (payload.error as Record<string, unknown> | undefined)?.message;
-    throw new Error(typeof message === "string" ? message : "单品识别失败");
+  let lastError: unknown;
+  // 重试一次，缓解 AI 接口偶发的限流/网络抖动/返回格式异常。
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const response = await fetch(`${baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model,
+          temperature: 0.1,
+          enable_thinking: false,
+          messages: [{ role: "user", content: [
+            { type: "image_url", image_url: { url: imageData } },
+            { type: "text", text: prompt },
+          ] }],
+        }),
+        signal: AbortSignal.timeout(75_000),
+      });
+      const payload = await response.json() as Record<string, unknown>;
+      if (!response.ok) {
+        const message = (payload.error as Record<string, unknown> | undefined)?.message;
+        throw new Error(typeof message === "string" ? message : "单品识别失败");
+      }
+      const choices = payload.choices as Array<{ message?: { content?: string } }> | undefined;
+      const content = choices?.[0]?.message?.content;
+      if (!content) throw new Error("模型未返回识别结果");
+      return cleanDetections(parseJsonContent(content));
+    } catch (error) {
+      lastError = error;
+    }
   }
-  const choices = payload.choices as Array<{ message?: { content?: string } }> | undefined;
-  const content = choices?.[0]?.message?.content;
-  if (!content) throw new Error("模型未返回识别结果");
-  return cleanDetections(parseJsonContent(content));
+  throw lastError;
 }
 
 function cleanDetections(value: unknown[]) {
@@ -134,6 +152,11 @@ function cleanDetections(value: unknown[]) {
     if (Boolean(item.partially_occluded) && visibleRatio < (smallAccessory ? 0.76 : footwear ? 0.52 : wearableAccessory ? 0.45 : 0.68)) return [];
     if (boxArea < (smallAccessory ? 4_500 : footwear ? 5_000 : wearableAccessory ? 2_500 : 10_000)) return [];
     const commodity = ["鞋子", "帽子", "腰带", "包", "首饰", "其他配饰"].includes(category);
+    const sourceEvidence = String(item.source_evidence || "").trim().slice(0, 80);
+    // A bbox without an explicit pointer back to the current source image is not
+    // sufficient evidence. This deliberately favors precision over recall.
+    if (item.is_real_item !== true || sourceEvidence.length < 3) return [];
+    const depictionType = ["worn", "product"].includes(String(item.depiction_type)) ? String(item.depiction_type) as "worn" | "product" : "unknown";
     return [{
       id: Number(item.id) || index + 1,
       category,
@@ -143,6 +166,9 @@ function cleanDetections(value: unknown[]) {
       recommended_api: commodity ? "SegmentCommodity" : "SegmentCloth",
       confidence,
       visible_ratio: visibleRatio,
+      identity_key: normalizeIdentityKey(item.identity_key),
+      source_evidence: sourceEvidence,
+      depiction_type: depictionType,
     }];
   });
 }
@@ -229,6 +255,39 @@ function deduplicateDetections(items: Detection[]) {
   return unique;
 }
 
+function detectionQualityScore(item: Detection) {
+  const depictionBonus = item.depiction_type === "product" ? 0.32 : item.depiction_type === "worn" ? 0.08 : 0;
+  const occlusionPenalty = item.partially_occluded ? 0.22 : 0;
+  const sizeScore = Math.min(0.28, Math.sqrt(boxArea(item)) / 1_800);
+  return (item.confidence || 0) * 0.28 + (item.visible_ratio || 0) * 0.42 + depictionBonus + sizeScore - occlusionPenalty;
+}
+
+/**
+ * Collages often show the same garment on a model and again as a product cutout.
+ * Geometry cannot dedupe those spatially separated depictions, so the VLM assigns
+ * a descriptive identity_key and the server keeps only the clearest evidence.
+ */
+function deduplicateIdentityGroups(items: Detection[]) {
+  const unique: Detection[] = [];
+  const keyed = new Map<string, number>();
+  for (const item of items) {
+    const identityKey = normalizeIdentityKey(item.identity_key);
+    const groupKey = identityKey ? `${item.category}|${normalizeColor(item.color)}|${identityKey}` : "";
+    if (!groupKey) {
+      unique.push(item);
+      continue;
+    }
+    const existingIndex = keyed.get(groupKey);
+    if (existingIndex === undefined) {
+      keyed.set(groupKey, unique.length);
+      unique.push(item);
+      continue;
+    }
+    if (detectionQualityScore(item) > detectionQualityScore(unique[existingIndex])) unique[existingIndex] = item;
+  }
+  return unique;
+}
+
 function isSameFocusedAccessory(a: Detection, b: Detection) {
   if (a.category !== b.category) return false;
   return a.category === "鞋子" ? isSameFootwearObject(a, b) : boxIou(a, b) > 0.2 || overlapOfSmaller(a, b) > 0.55;
@@ -266,19 +325,23 @@ export async function POST(request: Request) {
 2. 裤子/裙子 bbox 只包下装本身，到裤脚/裙摆为止，不包含上衣、皮带装饰、脚、袜子或鞋。
 3. 鞋子 bbox 包含同一双鞋，但不包含脚、袜子和裤脚；一双鞋视为一件。
 4. 独立佩戴、具有完整带身和扣头的腰带输出为腰带；只有腰带扣、裤腰、衣服自带系带、衬衫打结或服装装饰带时不要输出腰带。花纹、盘扣和衣服上的装饰图案不是首饰。
-5. 同类但完全独立的衣物逐件输出；不要把上下装合成一件，也不要重复输出高度重叠的同一单品。
+5. 同类但完全独立的衣物逐件输出；不要把上下装合成一件。广告拼图、穿搭海报或商品详情图中，同一款单品可能以模特上身、局部放大、缩小人物或独立商品图重复出现：这些只能输出一次，优先输出独立商品图，其次选择最完整、最清晰的那一个框。
 6. 若某件内搭或下装被长外套遮住超过一半，只露出局部边缘、开衩或下摆，无法判断完整轮廓和版型，则不要输出该单品。宁可少识别，也绝不根据局部颜色脑补完整衣物。
+7. 文字、Logo、印在衣服上的图案或人物、海报装饰、阴影、反光、手机、家具和背景物不是穿戴单品。每个结果必须能在原图指定位置找到清晰视觉证据，不得根据常识补出图片中不存在的鞋、帽、腰带、内搭或配饰。
 
 bbox_2d 使用 0到1000 归一化坐标，格式为 [xmin,ymin,xmax,ymax]，尽量贴合物品轮廓且保留约1%安全边距。
 confidence 为识别置信度 0到1；visible_ratio 为该单品可见完整度 0到1。看不清或 confidence 低于0.7的普通单品不要输出；首饰和其他配饰低于0.86不要输出。
 衣物 recommended_api 为 SegmentCloth，鞋帽腰带包首饰为 SegmentCommodity。
-只返回严格 JSON 数组，每项包含 id、category、color、bbox_2d、partially_occluded、confidence、visible_ratio、recommended_api，不要解释。`;
+为每件真实单品增加：is_real_item（必须为true）、source_evidence（20字内说明它在原图哪里可见）、depiction_type（worn、product或unknown）、identity_key（由颜色+具体品类+醒目款式特征组成的稳定短标识；同一单品的重复画面必须完全相同，不同单品必须不同）。
+只返回严格 JSON 数组，每项包含 id、category、color、bbox_2d、partially_occluded、confidence、visible_ratio、recommended_api、is_real_item、source_evidence、depiction_type、identity_key，不要解释。`;
     const focusedAccessoryPrompt = `
 只复核照片中真实可见的帽子、腰带和鞋子，不要输出衣服、裤子、包、手机、手表或首饰。
 1. 帽子：只框独立帽体，不包含头、脸和头发；棒球帽、针织帽、礼帽均可。即使位于画面顶部且面积较小也要检查。
 2. 腰带：必须看到独立带身沿腰部延伸并有真实扣头，只框腰带本身；裤腰、衬衫下摆打结、衣服自带系带或只有扣头时不要输出。
 3. 鞋子：仔细检查画面底部人物脚部；一双鞋视为一件，bbox 尽量同时包住左右两只鞋，不包含小腿、袜子、地面或裤脚。模型若只能分别框左右鞋也可以逐只输出，系统会合并。
-bbox_2d 使用0到1000归一化坐标。只返回严格JSON数组，每项包含 id、category（只能是帽子、腰带、鞋子）、color、bbox_2d、partially_occluded、confidence、visible_ratio、recommended_api:"SegmentCommodity"。没有则返回[]。`;
+4. 拼图或广告中同一顶帽子、同一条腰带、同一双鞋即使在多个位置重复出现，也只能输出一次，优先选择独立商品图或最完整清晰的画面。不要把文字、衣服图案、背景物、影子或上一张图片中的物品当作当前图片的单品。
+bbox_2d 使用0到1000归一化坐标。为每件真实单品增加 is_real_item:true、source_evidence、depiction_type 和 identity_key；同一单品的重复画面必须使用完全相同的 identity_key。
+只返回严格JSON数组，每项包含 id、category（只能是帽子、腰带、鞋子）、color、bbox_2d、partially_occluded、confidence、visible_ratio、recommended_api:"SegmentCommodity"、is_real_item、source_evidence、depiction_type、identity_key。没有则返回[]。`;
 
     const [generalResult, focusedResult] = await Promise.allSettled([
       requestDetections(baseUrl, apiKey, model, imageData, prompt),
@@ -287,9 +350,9 @@ bbox_2d 使用0到1000归一化坐标。只返回严格JSON数组，每项包含
     const general = generalResult.status === "fulfilled" ? generalResult.value : [];
     const focusedItems = focusedResult.status === "fulfilled" ? focusedResult.value : [];
     if (!general.length && !focusedItems.length) throw generalResult.status === "rejected" ? generalResult.reason : new Error("没有识别到可入柜的单品");
-    const detections = deduplicateDetections(
-      mergePairs(removeItemsHiddenByOuterwear(deduplicateDetections(addMissingFocusedItems(general, focusedItems)))),
-    ).map((item, index) => ({ ...item, id: index + 1 }));
+    const detections = deduplicateIdentityGroups(deduplicateDetections(
+      mergePairs(removeItemsHiddenByOuterwear(deduplicateDetections(deduplicateIdentityGroups(addMissingFocusedItems(general, focusedItems))))),
+    )).map((item, index) => ({ ...item, id: index + 1 }));
     if (!detections.length) throw new Error("没有识别到可入柜的单品");
     return Response.json({ detections });
   } catch (error) {

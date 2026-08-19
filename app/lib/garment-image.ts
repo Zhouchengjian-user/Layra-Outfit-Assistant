@@ -1,4 +1,5 @@
 import { decodeGarmentTags, normalizeGarmentAITags, type GarmentAITags } from "./garment-tags";
+import { requestBlob, requestJson } from "./api-client";
 
 export type ProcessedGarmentImage = {
   blob: Blob;
@@ -21,6 +22,9 @@ type GarmentDetection = {
   bbox_2d: [number, number, number, number];
   partially_occluded: boolean;
   recommended_api: "SegmentCloth" | "SegmentCommodity";
+  identity_key?: string;
+  source_evidence?: string;
+  depiction_type?: "worn" | "product" | "unknown";
 };
 
 type RGB = { r: number; g: number; b: number };
@@ -135,10 +139,13 @@ async function cropDetection(file: File, box: [number, number, number, number], 
 async function analyzeGarments(file: File) {
   const form = new FormData();
   form.append("image", await createAnalysisBlob(file), "wardrobe-analysis.jpg");
-  const response = await fetch("/api/wardrobe/analyze", { method: "POST", body: form });
-  const payload = await response.json() as { detections?: GarmentDetection[]; error?: string };
-  if (!response.ok || !payload.detections?.length) throw new Error(payload.error || "没有识别到单品");
-  return payload.detections;
+  const { data } = await requestJson<{ detections?: GarmentDetection[] }>("/api/wardrobe/analyze", {
+    method: "POST",
+    body: form,
+    timeoutMs: 180_000,
+  });
+  if (!data.detections?.length) throw new Error("没有识别到单品");
+  return data.detections;
 }
 
 async function productizeGarment(blob: Blob, category: string, color: string) {
@@ -146,13 +153,9 @@ async function productizeGarment(blob: Blob, category: string, color: string) {
   form.append("image", blob, "garment.jpg");
   form.append("category", category);
   form.append("color", color);
-  const response = await fetch("/api/wardrobe/productize", { method: "POST", body: form });
-  if (!response.ok) {
-    const payload = await response.json().catch(() => ({})) as { error?: string };
-    throw new Error(payload.error || "高清商品图生成失败");
-  }
+  const { data, response } = await requestBlob("/api/wardrobe/productize", { method: "POST", body: form, timeoutMs: 200_000 });
   return {
-    blob: await response.blob(),
+    blob: data,
     quality: response.headers.get("X-Yida-Quality") === "good" ? "good" as const : "review" as const,
     aiTags: decodeGarmentTags(response.headers.get("X-Yida-Tags"), { category, color }),
   };
@@ -168,15 +171,24 @@ function detectionOverlapOfSmaller(a: GarmentDetection, b: GarmentDetection) {
 }
 
 function deduplicateBeforeGeneration(detections: GarmentDetection[]) {
+  const identityKeys = new Set<string>();
   return [...detections]
     .sort((a, b) => {
       const areaA = (a.bbox_2d[2] - a.bbox_2d[0]) * (a.bbox_2d[3] - a.bbox_2d[1]);
       const areaB = (b.bbox_2d[2] - b.bbox_2d[0]) * (b.bbox_2d[3] - b.bbox_2d[1]);
       return areaB - areaA;
     })
-    .filter((item, index, ordered) => !ordered.slice(0, index).some(candidate =>
-      candidate.category === item.category && detectionOverlapOfSmaller(candidate, item) > 0.68,
-    ));
+    .filter((item, index, ordered) => {
+      const identityKey = String(item.identity_key || "").trim().toLowerCase();
+      const semanticKey = identityKey ? `${item.category}|${item.color}|${identityKey}` : "";
+      if (semanticKey && identityKeys.has(semanticKey)) return false;
+      const overlapsEarlier = ordered.slice(0, index).some(candidate =>
+        candidate.category === item.category && detectionOverlapOfSmaller(candidate, item) > 0.68,
+      );
+      if (overlapsEarlier) return false;
+      if (semanticKey) identityKeys.add(semanticKey);
+      return true;
+    });
 }
 
 export async function processGarmentUpload(file: File): Promise<ProcessedGarmentImage[]> {

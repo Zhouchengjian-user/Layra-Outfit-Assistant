@@ -1,22 +1,17 @@
-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
-
 # dependencies
 /node_modules
 /.pnp
 .pnp.*
-.yarn/*
-!.yarn/patches
-!.yarn/plugins
-!.yarn/releases
-!.yarn/versions
-
-# testing
-/coverage
 
 # next.js
 /.next/
-/.vinext/
 /out/
+
+# production
+/dist/
+
+# 本地开发数据（SQLite + 图片）
+/.data/
 
 # misc
 .DS_Store
@@ -36,8 +31,5 @@ yarn-error.log*
 # vercel
 .vercel
 
-/dist/
-/.open-next/
-/.wrangler/
-/outputs/
-/work/
+# typescript
+*.tsbuildinfo
