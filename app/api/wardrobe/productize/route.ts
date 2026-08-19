@@ -1,5 +1,9 @@
 import { getServerEnv, requireServerEnv } from "../../../lib/server-env";
-import { encodeGarmentTags, normalizeGarmentAITags } from "../../../lib/garment-tags";
+import { encodeGarmentTags, normalizeGarmentAITags, type GarmentAITags } from "../../../lib/garment-tags";
+import { env } from "cloudflare:workers";
+
+type ProductizeEnv = { WARDROBE_IMAGES?: R2Bucket };
+type CachedProduct = { quality: "good" | "review"; tags: GarmentAITags; contentType: string };
 
 type GenerationPayload = {
   code?: string;
@@ -16,6 +20,28 @@ function toBase64(buffer: ArrayBuffer) {
     binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
   }
   return btoa(binary);
+}
+
+async function productCacheKey(buffer: ArrayBuffer, category: string, color: string) {
+  const prefix = new TextEncoder().encode(`yida-product-v2\n${category}\n${color}\n`);
+  const bytes = new Uint8Array(prefix.length + buffer.byteLength);
+  bytes.set(prefix);
+  bytes.set(new Uint8Array(buffer), prefix.length);
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+  return Array.from(digest, byte => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function productResponse(bytes: ArrayBuffer | ReadableStream, meta: CachedProduct, cacheStatus: "HIT" | "MISS") {
+  return new Response(bytes, {
+    headers: {
+      "Content-Type": meta.contentType,
+      "Cache-Control": "private, max-age=31536000, immutable",
+      "X-Yida-Quality": meta.quality,
+      "X-Yida-Output": "product-image-hd",
+      "X-Yida-Tags": encodeGarmentTags(meta.tags),
+      "X-Yida-Cache": cacheStatus,
+    },
+  });
 }
 
 function productPrompt(category: string, color: string) {
@@ -105,11 +131,25 @@ export async function POST(request: Request) {
 
     const category = String(form.get("category") || "服饰").trim().slice(0, 20);
     const color = String(form.get("color") || "").trim().slice(0, 20);
+    const sourceBuffer = await image.arrayBuffer();
+    const cacheHash = await productCacheKey(sourceBuffer, category, color);
+    const cacheBase = `product-cache/v2/${cacheHash}`;
+    const storage = env as unknown as ProductizeEnv;
+    if (storage.WARDROBE_IMAGES) {
+      const [cachedImage, cachedMetadata] = await Promise.all([
+        storage.WARDROBE_IMAGES.get(`${cacheBase}.image`),
+        storage.WARDROBE_IMAGES.get(`${cacheBase}.json`),
+      ]);
+      if (cachedImage && cachedMetadata) {
+        const meta = await new Response(cachedMetadata.body).json() as CachedProduct;
+        return productResponse(cachedImage.body, meta, "HIT");
+      }
+    }
     const apiKey = requireServerEnv("DASHSCOPE_API_KEY");
     const endpoint = getServerEnv("DASHSCOPE_IMAGE_ENDPOINT") || "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation";
     const model = getServerEnv("DASHSCOPE_PRODUCT_IMAGE_MODEL") || "qwen-image-2.0";
     const size = getServerEnv("DASHSCOPE_PRODUCT_IMAGE_SIZE") || "1536*1536";
-    const imageData = `data:${image.type};base64,${toBase64(await image.arrayBuffer())}`;
+    const imageData = `data:${image.type};base64,${toBase64(sourceBuffer)}`;
 
     const response = await fetch(endpoint, {
       method: "POST",
@@ -141,15 +181,19 @@ export async function POST(request: Request) {
       fetch(generatedUrl, { signal: AbortSignal.timeout(60_000) }),
     ]);
     if (!generated.ok) throw new Error("高清商品图下载失败");
-    return new Response(await generated.arrayBuffer(), {
-      headers: {
-        "Content-Type": generated.headers.get("Content-Type") || "image/png",
-        "Cache-Control": "no-store",
-        "X-Yida-Quality": validation.quality,
-        "X-Yida-Output": "product-image-hd",
-        "X-Yida-Tags": encodeGarmentTags(validation.tags),
-      },
-    });
+    const generatedBuffer = await generated.arrayBuffer();
+    const meta: CachedProduct = {
+      quality: validation.quality,
+      tags: validation.tags,
+      contentType: generated.headers.get("Content-Type") || "image/png",
+    };
+    if (storage.WARDROBE_IMAGES) {
+      await Promise.all([
+        storage.WARDROBE_IMAGES.put(`${cacheBase}.image`, generatedBuffer, { httpMetadata: { contentType: meta.contentType } }),
+        storage.WARDROBE_IMAGES.put(`${cacheBase}.json`, new Blob([JSON.stringify(meta)], { type: "application/json" }), { httpMetadata: { contentType: "application/json" } }),
+      ]);
+    }
+    return productResponse(generatedBuffer, meta, "MISS");
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : "高清商品图生成失败" }, { status: 500 });
   }

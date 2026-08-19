@@ -144,6 +144,7 @@ export default function Home() {
   const modelFileRef = useRef<HTMLInputElement>(null);
   const uploadModeRef = useRef<"replace" | "append">("replace");
   const uploadBatchRef = useRef(0);
+  const uploadJobActiveRef = useRef(false);
 
   useEffect(() => {
     const timer = setInterval(() => setPromptIndex(value => (value + 1) % prompts.length), 2800);
@@ -187,6 +188,10 @@ export default function Home() {
   const notify = (message: string) => { setToast(message); window.setTimeout(() => setToast(""), 2200); };
 
   const openUploadPicker = (mode: "replace" | "append" = "replace") => {
+    if (uploadJobActiveRef.current) {
+      notify("当前照片还在处理中，请完成后再继续添加");
+      return;
+    }
     uploadModeRef.current = mode;
     fileRef.current?.click();
   };
@@ -264,8 +269,14 @@ export default function Home() {
 
   const handleUpload = async (files: FileList | null) => {
     if (!files?.length) return;
+    if (uploadJobActiveRef.current) {
+      notify("请勿重复提交，当前照片仍在处理中");
+      if (fileRef.current) fileRef.current.value = "";
+      return;
+    }
     const selected = Array.from(files).filter(file => file.type.startsWith("image/")).slice(0, 5);
     if (!selected.length) return;
+    uploadJobActiveRef.current = true;
     const mode = uploadModeRef.current;
     uploadModeRef.current = "replace";
     const batchId = ++uploadBatchRef.current;
@@ -293,6 +304,7 @@ export default function Home() {
     } catch {
       if (uploadBatchRef.current === batchId) notify("有一张图片处理失败，请换一张清晰照片再试");
     } finally {
+      uploadJobActiveRef.current = false;
       if (uploadBatchRef.current === batchId) setUploadProcessing(false);
       if (fileRef.current) fileRef.current.value = "";
     }
@@ -539,7 +551,7 @@ export default function Home() {
 
       {showReview && <div className="modal-backdrop" onClick={() => setShowReview(false)}><section className="modal review-modal" onClick={event => event.stopPropagation()}><button className="modal-close" onClick={() => setShowReview(false)}>×</button><span className="review-score">88<small>分</small></span><span className="micro-label">AI OUTFIT REVIEW</span><h3>好看，而且挺像你。</h3><p>奶油白和炭灰很稳，焦糖色鞋子刚好把整套提暖了一点。比例也舒服，通勤穿完全没问题。</p><div className="review-notes"><div><b>颜色协调</b><span>柔和耐看，焦糖色是亮点</span></div><div><b>版型比例</b><span>上短下长，很显腿长</span></div><div><b>天气场合</b><span>适合 20–28℃ 通勤场景</span></div><div><b>可以更好</b><span>如果添一条细皮带，层次会更完整</span></div></div><button onClick={() => { setShowReview(false); setSelectedLook(1); setShowModel(true); }}>生成 AI 模特效果图</button></section></div>}
 
-      {uploadOpen && <div className="modal-backdrop upload-backdrop" onClick={() => { if (!uploadProcessing && !uploadSaving) closeUpload(); }}><section className="modal upload-modal" onClick={event => event.stopPropagation()}><button className="modal-close" disabled={uploadSaving} onClick={closeUpload}>×</button><header className="upload-modal-head"><span className="micro-label">SMART WARDROBE IMPORT</span><h3>{uploadProcessing ? "易搭正在生成高清商品图" : "确认后加入衣柜"}</h3><p>{uploadProcessing ? `正在识别、去除人物并生成高清白底图 ${uploadProgress} / ${Math.max(uploadTotal, 1)} 张` : `已整理 ${garmentDrafts.length} 件单品；点击整张卡片即可切换是否加入衣柜`}</p></header>
+      {uploadOpen && <div className="modal-backdrop upload-backdrop" onClick={() => { if (!uploadProcessing && !uploadSaving) closeUpload(); }}><section className="modal upload-modal" onClick={event => event.stopPropagation()}><button className="modal-close" disabled={uploadProcessing || uploadSaving} onClick={closeUpload}>×</button><header className="upload-modal-head"><span className="micro-label">SMART WARDROBE IMPORT</span><h3>{uploadProcessing ? "易搭正在生成高清商品图" : "确认后加入衣柜"}</h3><p>{uploadProcessing ? `正在识别、去除人物并生成高清白底图 ${uploadProgress} / ${Math.max(uploadTotal, 1)} 张` : `已整理 ${garmentDrafts.length} 件单品；点击整张卡片即可切换是否加入衣柜`}</p></header>
         {uploadProcessing && <div className="cutout-progress"><div className="cutout-animation"><span /><i /><b>单品处理中</b></div><p>原图仅用于识别与抠图，只有你确认的白底单品图会加入衣柜。</p></div>}
         {!!garmentDrafts.length && <div className="draft-grid">{garmentDrafts.map(draft => <article className={`garment-draft ${draft.selected ? "selected" : ""} quality-${draft.cutoutQuality}`} key={draft.id} aria-label={`${draft.name}，${draft.selected ? "已选择加入衣柜" : "未选择"}`} onClick={event => { if (draft.cutoutQuality === "failed" || (event.target as HTMLElement).closest("input, select, label")) return; updateGarmentDraft(draft.id, { selected: !draft.selected }); }}><span className="draft-state">{draft.cutoutQuality === "failed" ? "生成失败" : draft.selected ? "✓ 已选择" : "点击选择"}</span><div className="draft-preview product-white"><img src={draft.previewUrl} alt={draft.name} />{draft.cutoutQuality === "review" && <span>原图信息不足，请谨慎确认</span>}{draft.cutoutQuality === "failed" && <span>这是原图裁剪，不会入柜</span>}</div><label>衣物名称<input value={draft.name} onChange={event => updateGarmentDraft(draft.id, { name: event.target.value })} /></label><div className="draft-fields"><label>分类<select value={draft.category} onChange={event => updateGarmentDraft(draft.id, { category: event.target.value })}>{["上衣", "外套", "下装", "连衣裙", "鞋履", "配饰", "帽子"].map(value => <option key={value}>{value}</option>)}</select></label><label>季节<select value={draft.season} onChange={event => updateGarmentDraft(draft.id, { season: event.target.value })}>{["四季", "春秋", "夏季", "冬季"].map(value => <option key={value}>{value}</option>)}</select></label></div><div className="recognized-tags"><span><i style={{ background: draft.colorHex }} />{draft.colorName}</span>{garmentTagLabels(draft.aiTags).slice(0, 4).map(tag => <span key={tag}>{tag}</span>)}<span>正式 {draft.aiTags.formality}/5</span><span>保暖 {draft.aiTags.warmth}/5</span><span>{draft.cutoutQuality === "good" ? "高清商品图" : draft.cutoutQuality === "review" ? "待人工确认" : "未生成商品图"}</span></div></article>)}</div>}
         {!uploadProcessing && <footer className="upload-modal-foot"><button className="secondary-upload" onClick={() => openUploadPicker("append")}>＋ 继续添加</button><button className="primary-upload" disabled={uploadSaving || !garmentDrafts.some(item => item.selected)} onClick={saveGarmentDrafts}>{uploadSaving ? "正在加入衣柜…" : `加入衣柜（${garmentDrafts.filter(item => item.selected).length}）`}</button></footer>}

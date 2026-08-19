@@ -158,6 +158,27 @@ async function productizeGarment(blob: Blob, category: string, color: string) {
   };
 }
 
+function detectionOverlapOfSmaller(a: GarmentDetection, b: GarmentDetection) {
+  const [ax1, ay1, ax2, ay2] = a.bbox_2d;
+  const [bx1, by1, bx2, by2] = b.bbox_2d;
+  const intersection = Math.max(0, Math.min(ax2, bx2) - Math.max(ax1, bx1)) * Math.max(0, Math.min(ay2, by2) - Math.max(ay1, by1));
+  const areaA = Math.max(1, (ax2 - ax1) * (ay2 - ay1));
+  const areaB = Math.max(1, (bx2 - bx1) * (by2 - by1));
+  return intersection / Math.min(areaA, areaB);
+}
+
+function deduplicateBeforeGeneration(detections: GarmentDetection[]) {
+  return [...detections]
+    .sort((a, b) => {
+      const areaA = (a.bbox_2d[2] - a.bbox_2d[0]) * (a.bbox_2d[3] - a.bbox_2d[1]);
+      const areaB = (b.bbox_2d[2] - b.bbox_2d[0]) * (b.bbox_2d[3] - b.bbox_2d[1]);
+      return areaB - areaA;
+    })
+    .filter((item, index, ordered) => !ordered.slice(0, index).some(candidate =>
+      candidate.category === item.category && detectionOverlapOfSmaller(candidate, item) > 0.68,
+    ));
+}
+
 export async function processGarmentUpload(file: File): Promise<ProcessedGarmentImage[]> {
   let detections: GarmentDetection[];
   try {
@@ -167,7 +188,8 @@ export async function processGarmentUpload(file: File): Promise<ProcessedGarment
     return [{ ...fallback, cutoutQuality: "failed" }];
   }
 
-  const results = await mapWithConcurrency(detections, 2, async detection => {
+  const uniqueDetections = deduplicateBeforeGeneration(detections);
+  const results = await mapWithConcurrency(uniqueDetections, 2, async detection => {
     const sourceBlob = await cropDetection(file, detection.bbox_2d, detection.category);
     const category = displayCategory(detection.category);
     const color = colorForName(detection.color);

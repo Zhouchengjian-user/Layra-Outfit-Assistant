@@ -215,6 +215,20 @@ function deduplicateShoes(items: Detection[]) {
   return [...items.filter(item => item.category !== "鞋子"), ...uniqueShoes];
 }
 
+function deduplicateDetections(items: Detection[]) {
+  const ordered = [...items].sort((a, b) => boxArea(b) - boxArea(a));
+  const unique: Detection[] = [];
+  for (const item of ordered) {
+    const matchIndex = unique.findIndex(candidate => {
+      if (candidate.category !== item.category) return false;
+      return boxIou(candidate, item) > 0.32 || overlapOfSmaller(candidate, item) > 0.68;
+    });
+    if (matchIndex < 0) unique.push(item);
+    else unique[matchIndex] = mergeDetectionBoxes(unique[matchIndex], item);
+  }
+  return unique;
+}
+
 function isSameFocusedAccessory(a: Detection, b: Detection) {
   if (a.category !== b.category) return false;
   return a.category === "鞋子" ? isSameFootwearObject(a, b) : boxIou(a, b) > 0.2 || overlapOfSmaller(a, b) > 0.55;
@@ -273,7 +287,9 @@ bbox_2d 使用0到1000归一化坐标。只返回严格JSON数组，每项包含
     const general = generalResult.status === "fulfilled" ? generalResult.value : [];
     const focusedItems = focusedResult.status === "fulfilled" ? focusedResult.value : [];
     if (!general.length && !focusedItems.length) throw generalResult.status === "rejected" ? generalResult.reason : new Error("没有识别到可入柜的单品");
-    const detections = mergePairs(removeItemsHiddenByOuterwear(addMissingFocusedItems(general, focusedItems)));
+    const detections = deduplicateDetections(
+      mergePairs(removeItemsHiddenByOuterwear(deduplicateDetections(addMissingFocusedItems(general, focusedItems)))),
+    ).map((item, index) => ({ ...item, id: index + 1 }));
     if (!detections.length) throw new Error("没有识别到可入柜的单品");
     return Response.json({ detections });
   } catch (error) {

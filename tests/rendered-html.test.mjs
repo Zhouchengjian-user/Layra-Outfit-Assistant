@@ -53,6 +53,7 @@ test("includes the phase-one wardrobe workflow and durable storage", async () =>
   assert.match(analyzer, /focusedAccessoryPrompt/);
   assert.match(analyzer, /addMissingFocusedItems/);
   assert.match(analyzer, /deduplicateShoes/);
+  assert.match(analyzer, /deduplicateDetections/);
   assert.match(analyzer, /overlapOfSmaller/);
   assert.match(analyzer, /centerYDistance/);
   assert.match(analyzer, /腰带/);
@@ -64,6 +65,8 @@ test("includes the phase-one wardrobe workflow and durable storage", async () =>
   assert.match(productizer, /validateProductImage/);
   assert.match(productizer, /图一是原始裁剪/);
   assert.match(productizer, /X-Yida-Tags/);
+  assert.match(productizer, /product-cache\/v2/);
+  assert.match(productizer, /X-Yida-Cache/);
   assert.match(api, /ai_tags/);
   assert.match(tagger, /formality/);
   assert.match(tagger, /occasions/);
@@ -72,10 +75,12 @@ test("includes the phase-one wardrobe workflow and durable storage", async () =>
   assert.match(page, /Math\.min\(4, selected\.length\)/);
   assert.match(page, /uploadBatchRef/);
   assert.match(page, /uploadBatchRef\.current !== batchId/);
+  assert.match(page, /uploadJobActiveRef/);
   assert.match(page, /openUploadPicker\("replace"\)/);
   assert.match(page, /openUploadPicker\("append"\)/);
   assert.match(api, /schemaReady/);
-  assert.match(processor, /mapWithConcurrency\(detections, 2/);
+  assert.match(processor, /deduplicateBeforeGeneration/);
+  assert.match(processor, /mapWithConcurrency\(uniqueDetections, 2/);
   assert.match(page, /点击整张卡片即可切换是否加入衣柜/);
   assert.match(schema, /wardrobeItems/);
   assert.match(hosting, /"d1": "DB"/);
