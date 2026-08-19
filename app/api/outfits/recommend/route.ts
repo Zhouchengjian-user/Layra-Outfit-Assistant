@@ -17,6 +17,18 @@ function parseJsonObject(content: string) {
   return JSON.parse(stripped.slice(start, end + 1)) as Record<string, unknown>;
 }
 
+function sanitizeDisplayText(value: unknown, items: WardrobeRow[], fallback = "") {
+  let text = String(value || fallback);
+  for (const item of [...items].sort((a, b) => b.id.length - a.id.length)) text = text.replaceAll(item.id, "");
+  return text
+    .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/gi, "")
+    .replace(/[（(]\s*(?:或|和|、|,|，|\/|\s)*[）)]/g, "")
+    .replace(/\s+([，。；：、！？])/g, "$1")
+    .replace(/([，、])\s*([，、])/g, "$1")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
 function itemLayer(item: WardrobeRow) {
   if (["裤子", "裙子", "下装"].includes(item.category)) return "bottom";
   if (item.category === "连衣裙") return "dress";
@@ -67,12 +79,12 @@ function normalizeResult(value: Record<string, unknown>, items: WardrobeRow[], s
     if (!itemIds.length) return [];
     return [{
       id: `look-${index + 1}`,
-      title: String(look.title || `搭配方案 ${index + 1}`).slice(0, 24),
-      reason: String(look.reason || "根据你的需求和衣柜标签生成").slice(0, 180),
+      title: sanitizeDisplayText(look.title, items, `搭配方案 ${index + 1}`).slice(0, 24),
+      reason: sanitizeDisplayText(look.reason, items, "根据你的需求和衣柜标签生成").slice(0, 180),
       score: Math.max(70, Math.min(99, Math.round(Number(look.score) || 88))),
       itemIds,
-      highlights: Array.isArray(look.highlights) ? look.highlights.map(String).slice(0, 4) : [],
-      missingSuggestion: look.missingSuggestion ? String(look.missingSuggestion).slice(0, 80) : undefined,
+      highlights: Array.isArray(look.highlights) ? look.highlights.map(item => sanitizeDisplayText(item, items)).filter(Boolean).slice(0, 4) : [],
+      missingSuggestion: look.missingSuggestion ? sanitizeDisplayText(look.missingSuggestion, items).slice(0, 80) : undefined,
     }];
   });
   const fallbacks = fallbackRecommendations(items, scene);
@@ -115,7 +127,8 @@ export async function POST(request: Request) {
 1. itemIds只能使用衣柜中真实存在的id，绝不虚构单品；每套优先形成上装/外套+下装+鞋，或连衣裙+鞋，可按需加入配饰。
 2. 三套要有明显差异，同时满足天气、场合、舒适度、颜色协调和版型比例。
 3. reason像朋友一样轻松，说明为什么适合；缺少关键品类时仍只用衣柜现有单品，并在missingSuggestion中给出可选添置建议。
-4. 只返回严格JSON对象：{"intent":{"occasion":"","style":[],"warmth":3,"formality":3,"colorPreference":"","requirements":[]},"recommendations":[{"title":"","reason":"","score":90,"itemIds":[],"highlights":[],"missingSuggestion":""}]}。` }],
+4. itemIds只用于机器选品。title、reason、highlights、missingSuggestion等所有给用户阅读的文字严禁出现id、UUID或任何内部编号，只写自然的衣物名称。
+5. 只返回严格JSON对象：{"intent":{"occasion":"","style":[],"warmth":3,"formality":3,"colorPreference":"","requirements":[]},"recommendations":[{"title":"","reason":"","score":90,"itemIds":[],"highlights":[],"missingSuggestion":""}]}。` }],
       }),
       signal: AbortSignal.timeout(60_000),
     });

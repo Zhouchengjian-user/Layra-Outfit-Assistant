@@ -106,6 +106,8 @@ test("includes the phase-two personal model and real wardrobe styling workflow",
   assert.match(modelApi, /ON CONFLICT\(owner_id\)/);
   assert.match(recommendApi, /itemIds只能使用衣柜中真实存在的id/);
   assert.match(recommendApi, /status = 'available'/);
+  assert.match(recommendApi, /sanitizeDisplayText/);
+  assert.match(recommendApi, /严禁出现id、UUID或任何内部编号/);
   assert.match(visualizeApi, /保留图一人物的脸部身份/);
   assert.match(page, /buildOutfitReferenceBoard/);
   assert.match(page, /tryOnJobActiveRef/);
