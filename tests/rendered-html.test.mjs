@@ -81,3 +81,29 @@ test("includes the phase-one wardrobe workflow and durable storage", async () =>
   assert.match(hosting, /"d1": "DB"/);
   assert.match(hosting, /"r2": "WARDROBE_IMAGES"/);
 });
+
+test("includes the phase-two personal model and real wardrobe styling workflow", async () => {
+  const [page, modelApi, recommendApi, visualizeApi, weatherApi, schema, migration] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/model-profile/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/outfits/recommend/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/outfits/visualize/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/weather/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
+    readFile(new URL("../drizzle/0003_young_falcon.sql", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(page, /上传全身照/);
+  assert.match(page, /\/api\/outfits\/recommend/);
+  assert.match(page, /\/api\/outfits\/visualize/);
+  assert.match(page, /三套衣柜方案/);
+  assert.match(modelApi, /model-profiles/);
+  assert.match(modelApi, /ON CONFLICT\(owner_id\)/);
+  assert.match(recommendApi, /itemIds只能使用衣柜中真实存在的id/);
+  assert.match(recommendApi, /status = 'available'/);
+  assert.match(visualizeApi, /保留图一人物的脸部身份/);
+  assert.match(visualizeApi, /qwen-image-2\.0/);
+  assert.match(weatherApi, /open-meteo/);
+  assert.match(schema, /modelProfiles/);
+  assert.match(migration, /CREATE TABLE `model_profiles`/);
+});

@@ -15,3 +15,12 @@ export const wardrobeItems = sqliteTable("wardrobe_items", {
   imageKey: text("image_key").notNull(),
   createdAt: integer("created_at").notNull(),
 }, table => [index("idx_wardrobe_items_owner_created").on(table.ownerId, table.createdAt)]);
+
+export const modelProfiles = sqliteTable("model_profiles", {
+  ownerId: text("owner_id").primaryKey(),
+  imageKey: text("image_key").notNull(),
+  contentType: text("content_type").notNull(),
+  quality: text("quality").notNull().default("ready"),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+});
