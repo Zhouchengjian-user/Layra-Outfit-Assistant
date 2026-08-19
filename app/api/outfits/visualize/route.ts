@@ -24,8 +24,16 @@ export async function POST(request: Request) {
   const owner = getOwner(request);
   const storage = env as unknown as VisualizeEnv;
   try {
-    const body = await request.json() as { itemIds?: string[]; title?: string; scene?: string; prompt?: string };
-    const itemIds = [...new Set((body.itemIds || []).map(String))].slice(0, 6);
+    const contentType = request.headers.get("content-type") || "";
+    if (!contentType.includes("multipart/form-data")) return ownerJson({ error: "请刷新页面后重新生成效果图" }, owner, 400);
+    const form = await request.formData();
+    const outfitBoard = form.get("outfitBoard");
+    if (!(outfitBoard instanceof File) || !outfitBoard.type.startsWith("image/") || outfitBoard.size > 8 * 1024 * 1024) {
+      return ownerJson({ error: "搭配参考图无效，请刷新页面后重试" }, owner, 400);
+    }
+    let submittedIds: unknown = [];
+    try { submittedIds = JSON.parse(String(form.get("itemIds") || "[]")); } catch { submittedIds = []; }
+    const itemIds = [...new Set((Array.isArray(submittedIds) ? submittedIds : []).map(String))].slice(0, 6);
     if (!itemIds.length) return ownerJson({ error: "请先选择一套搭配" }, owner, 400);
     const profile = await storage.DB.prepare("SELECT image_key AS imageKey, content_type AS contentType FROM model_profiles WHERE owner_id = ?")
       .bind(owner.id).first<{ imageKey: string; contentType: string }>();
@@ -37,18 +45,15 @@ export async function POST(request: Request) {
     const rows = result.results || [];
     if (rows.length !== itemIds.length) return ownerJson({ error: "搭配中的部分衣物已不在衣柜，请重新推荐" }, owner, 409);
     const ordered = itemIds.map(id => rows.find(item => item.id === id)!).filter(Boolean);
-    const [modelImage, ...garmentImages] = await Promise.all([
-      r2DataUrl(storage.WARDROBE_IMAGES, profile.imageKey, profile.contentType),
-      ...ordered.map(item => r2DataUrl(storage.WARDROBE_IMAGES, item.imageKey)),
-    ]);
+    const modelImage = await r2DataUrl(storage.WARDROBE_IMAGES, profile.imageKey, profile.contentType);
+    const outfitBoardImage = `data:${outfitBoard.type};base64,${toBase64(await outfitBoard.arrayBuffer())}`;
     const apiKey = requireServerEnv("DASHSCOPE_API_KEY");
     const endpoint = getServerEnv("DASHSCOPE_IMAGE_ENDPOINT") || "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation";
     const model = getServerEnv("DASHSCOPE_TRYON_IMAGE_MODEL") || getServerEnv("DASHSCOPE_PRODUCT_IMAGE_MODEL") || "qwen-image-2.0";
-    const content: Array<{ image?: string; text?: string }> = [{ image: modelImage }];
-    garmentImages.forEach(image => content.push({ image }));
-    content.push({ text: `图一是用户本人的全身照，后续图片依次是用户衣柜中的真实单品：${ordered.map(item => `${item.name}（${item.category}）`).join("、")}。
-生成一张写实、高清、完整全身的穿搭效果图。必须保留图一人物的脸部身份、发型、肤色、身材比例和自然神态，让人物准确穿上后续图片中的全部单品；保持每件单品的主色、版型、长度、材质、纹理和可见图案，不得换成相似款，不得增加衣柜之外的衣服、鞋子、帽子或包。
-场景为${String(body.scene || "日常").slice(0, 20)}，搭配方案是${String(body.title || "今日搭配").slice(0, 30)}，补充要求：${String(body.prompt || "自然、舒适、比例协调").slice(0, 180)}。
+    const content: Array<{ image?: string; text?: string }> = [{ image: modelImage }, { image: outfitBoardImage }];
+    content.push({ text: `图一是用户本人的全身照；图二是一张搭配参考板，板内分格展示了本次从用户衣柜选出的全部真实单品：${ordered.map(item => `${item.name}（${item.category}）`).join("、")}。
+生成一张写实、高清、完整全身的穿搭效果图。必须保留图一人物的脸部身份、发型、肤色、身材比例和自然神态，让人物准确穿上图二参考板中的整套搭配。上衣、下装和鞋履必须全部使用；配饰根据其真实佩戴方式呈现。保持每件单品的主色、版型、长度、材质、纹理和可见图案，不得换成相似款，不得增加衣柜之外的衣服、鞋子、帽子或包。
+场景为${String(form.get("scene") || "日常").slice(0, 20)}，搭配方案是${String(form.get("title") || "今日搭配").slice(0, 30)}，补充要求：${String(form.get("prompt") || "自然、舒适、比例协调").slice(0, 180)}。
 人物从头到脚完整入镜，双脚不可裁切，站姿自然，简洁高级的浅灰影棚背景，柔和自然光，真实服装摄影质感，无文字、无水印、无边框、无多人、无额外肢体。` });
     const response = await fetch(endpoint, {
       method: "POST",

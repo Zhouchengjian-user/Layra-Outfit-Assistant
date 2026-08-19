@@ -107,6 +107,11 @@ test("includes the phase-two personal model and real wardrobe styling workflow",
   assert.match(recommendApi, /itemIds只能使用衣柜中真实存在的id/);
   assert.match(recommendApi, /status = 'available'/);
   assert.match(visualizeApi, /保留图一人物的脸部身份/);
+  assert.match(page, /buildOutfitReferenceBoard/);
+  assert.match(page, /tryOnJobActiveRef/);
+  assert.match(page, /tryOnCacheRef/);
+  assert.match(visualizeApi, /outfitBoardImage/);
+  assert.match(visualizeApi, /\[{ image: modelImage }, \{ image: outfitBoardImage }\]/);
   assert.match(visualizeApi, /qwen-image-2\.0/);
   assert.match(weatherApi, /open-meteo/);
   assert.match(schema, /modelProfiles/);

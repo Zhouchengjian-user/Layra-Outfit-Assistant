@@ -93,6 +93,62 @@ function ModelProfileStrip({ profile, uploading, onUpload }: { profile: ModelPro
   </section>;
 }
 
+async function buildOutfitReferenceBoard(items: OutfitItem[]) {
+  if (!items.length) throw new Error("这套搭配里没有可用的衣柜单品");
+  const canvas = document.createElement("canvas");
+  const size = 1200;
+  const padding = 42;
+  const gap = 24;
+  const columns = items.length === 1 ? 1 : 2;
+  const rows = Math.ceil(items.length / columns);
+  canvas.width = size;
+  canvas.height = size;
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("浏览器无法整理搭配参考图，请刷新后重试");
+  context.fillStyle = "#f7f7f5";
+  context.fillRect(0, 0, size, size);
+  const cellWidth = (size - padding * 2 - gap * (columns - 1)) / columns;
+  const cellHeight = (size - padding * 2 - gap * (rows - 1)) / rows;
+
+  const bitmaps = await Promise.all(items.map(async item => {
+    const response = await fetch(item.imageUrl, { credentials: "same-origin", cache: "no-store" });
+    if (!response.ok) throw new Error(`无法读取衣柜单品：${item.name}`);
+    return createImageBitmap(await response.blob());
+  }));
+
+  try {
+    bitmaps.forEach((bitmap, index) => {
+      const column = index % columns;
+      const row = Math.floor(index / columns);
+      const x = padding + column * (cellWidth + gap);
+      const y = padding + row * (cellHeight + gap);
+      context.fillStyle = "#ffffff";
+      context.beginPath();
+      context.roundRect(x, y, cellWidth, cellHeight, 24);
+      context.fill();
+      const labelHeight = 54;
+      const imagePadding = 22;
+      const availableWidth = cellWidth - imagePadding * 2;
+      const availableHeight = cellHeight - labelHeight - imagePadding * 2;
+      const scale = Math.min(availableWidth / bitmap.width, availableHeight / bitmap.height);
+      const drawWidth = bitmap.width * scale;
+      const drawHeight = bitmap.height * scale;
+      context.drawImage(bitmap, x + (cellWidth - drawWidth) / 2, y + imagePadding + (availableHeight - drawHeight) / 2, drawWidth, drawHeight);
+      context.fillStyle = "#303033";
+      context.font = "600 25px -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif";
+      context.textAlign = "center";
+      context.textBaseline = "middle";
+      context.fillText(`${items[index].category} · ${items[index].name}`.slice(0, 22), x + cellWidth / 2, y + cellHeight - labelHeight / 2, cellWidth - 28);
+    });
+  } finally {
+    bitmaps.forEach(bitmap => bitmap.close());
+  }
+
+  return new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error("搭配参考图整理失败，请重试")), "image/jpeg", 0.92);
+  });
+}
+
 export default function Home() {
   const [tab, setTab] = useState<Tab>("home");
   const [promptIndex, setPromptIndex] = useState(0);
@@ -145,10 +201,17 @@ export default function Home() {
   const uploadModeRef = useRef<"replace" | "append">("replace");
   const uploadBatchRef = useRef(0);
   const uploadJobActiveRef = useRef(false);
+  const tryOnJobActiveRef = useRef(false);
+  const tryOnCacheRef = useRef<Map<string, string>>(new Map());
 
   useEffect(() => {
     const timer = setInterval(() => setPromptIndex(value => (value + 1) % prompts.length), 2800);
     return () => clearInterval(timer);
+  }, []);
+
+  useEffect(() => () => {
+    tryOnCacheRef.current.forEach(url => URL.revokeObjectURL(url));
+    tryOnCacheRef.current.clear();
   }, []);
 
   useEffect(() => {
@@ -231,6 +294,9 @@ export default function Home() {
       const response = await fetch("/api/model-profile", { method: "POST", body: form });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || "全身照保存失败");
+      tryOnCacheRef.current.forEach(url => URL.revokeObjectURL(url));
+      tryOnCacheRef.current.clear();
+      setTryOnUrl("");
       setModelProfile(payload.profile);
       notify("个人模特已准备好");
     } catch (error) {
@@ -245,24 +311,40 @@ export default function Home() {
     const recommendation = recommendations.find(item => item.id === selectedRecommendationId);
     if (!recommendation) { notify("请先选择一套搭配"); return; }
     if (!modelProfile) { modelFileRef.current?.click(); return; }
-    if (tryOnUrl) URL.revokeObjectURL(tryOnUrl);
+    const cachedUrl = tryOnCacheRef.current.get(recommendation.id);
+    if (cachedUrl) {
+      setTryOnUrl(cachedUrl);
+      setShowTryOn(true);
+      return;
+    }
+    if (tryOnJobActiveRef.current) { notify("这张效果图正在生成，请稍等"); return; }
+    tryOnJobActiveRef.current = true;
     setTryOnUrl("");
     setShowTryOn(true);
     setTryOnLoading(true);
     try {
+      const outfitBoard = await buildOutfitReferenceBoard(recommendation.items);
+      const form = new FormData();
+      form.append("outfitBoard", outfitBoard, "outfit-reference.jpg");
+      form.append("itemIds", JSON.stringify(recommendation.itemIds));
+      form.append("title", recommendation.title);
+      form.append("scene", scene);
+      form.append("prompt", prompt);
       const response = await fetch("/api/outfits/visualize", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ itemIds: recommendation.itemIds, title: recommendation.title, scene, prompt }),
+        method: "POST", body: form,
       });
       if (!response.ok) {
         const payload = await response.json();
         throw new Error(payload.error || "效果图生成失败");
       }
-      setTryOnUrl(URL.createObjectURL(await response.blob()));
+      const resultUrl = URL.createObjectURL(await response.blob());
+      tryOnCacheRef.current.set(recommendation.id, resultUrl);
+      setTryOnUrl(resultUrl);
     } catch (error) {
       setShowTryOn(false);
       notify(error instanceof Error ? error.message : "效果图生成失败");
     } finally {
+      tryOnJobActiveRef.current = false;
       setTryOnLoading(false);
     }
   };
