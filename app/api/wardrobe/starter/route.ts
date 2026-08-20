@@ -121,10 +121,6 @@ export async function POST(request: Request) {
       return ownerJson({ saved: existing.length, reused: true, gender, starterGender: gender }, owner);
     }
 
-    // 若已启用其他性别的预设衣柜，先整体移除（含图片），再切换；用户上传的衣物不受影响
-    const otherGender = gender === "男" ? "女" : "男";
-    await removeStarterItems(owner.id, otherGender);
-
     const created = new Array<{ id: string; name: string; category: string; colorName: string; colorHex: string; season: string; style: string; aiTags: Record<string, unknown> }>(items.length);
     const errors = new Array<string | null>(items.length).fill(null);
     // 串行生成：qwen-image 对并发敏感，串行 + 单次重试最稳

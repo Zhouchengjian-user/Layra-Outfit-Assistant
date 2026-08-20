@@ -155,12 +155,19 @@ export async function POST(request: Request) {
     if (existing?.status === "failed") return ownerJson({ task: taskPayload(existing), error: existing.errorMessage || "上次搭配生成失败，请点击重试" }, owner, 409);
     if (existing) return ownerJson({ task: taskPayload(existing) }, owner, 202);
     const body = await request.json() as {
-      prompt?: string; scene?: string; weather?: Record<string, unknown>; profile?: Record<string, unknown>; intensity?: StyleIntensity;
+      prompt?: string; scene?: string; weather?: Record<string, unknown>; profile?: Record<string, unknown>; intensity?: StyleIntensity; closet?: string;
     };
     const scene = String(body.scene || "通勤").slice(0, 16);
     const prompt = String(body.prompt || "请推荐今天的穿搭").slice(0, 300);
+    const closet = String(body.closet || "own").slice(0, 10);
+    // 按当前衣柜过滤：own=用户自己的衣服，female/male=对应性别预设单品
+    const closetWhere = closet === "own"
+      ? " AND ai_tags NOT LIKE '%starterGender%'"
+      : closet === "female" || closet === "male"
+        ? ` AND ai_tags LIKE '%"starterGender":"${closet === "female" ? "女" : "男"}"%'`
+        : "";
     const items = await dbAll<WardrobeRow>(`SELECT id, name, category, color_name AS colorName, season, style, ai_tags AS aiTags
-      FROM wardrobe_items WHERE owner_id = ? AND status = 'available' ORDER BY created_at DESC LIMIT 240`, [owner.id]);
+      FROM wardrobe_items WHERE owner_id = ? AND status = 'available'${closetWhere} ORDER BY created_at DESC LIMIT 240`, [owner.id]);
     if (items.length < 2) return ownerJson({ error: "衣柜里至少需要 2 件可穿单品，先去添加衣服吧" }, owner, 400);
 
     const wardrobe: WardrobeMatchItem[] = items.map(item => {
