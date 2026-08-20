@@ -1028,6 +1028,8 @@ export default function Home() {
       <header className="app-header"><div className="mobile-brand"><img src="/yida-logo.png" alt="易搭" /><div><span className="micro-label">易搭 · THURSDAY, 13 AUG</span><h2>早上好，{profile.nickname}</h2></div></div><button className="avatar" onClick={() => setTab("profile")}>{profile.nickname.slice(0, 1)}</button></header>
       <button className="weather-strip" onClick={() => setShowWeather(true)}><div className="weather-icon"><Icon name="sun" /></div><div><b>{city} {weather.temperature}° / {weather.condition}</b><span>天气已同步 · 体感 {weather.apparent}°</span></div><small>穿薄层 ›</small></button>
       <ModelProfileStrip profile={modelProfile} uploading={modelUploading} onUpload={() => modelFileRef.current?.click()} />
+      {!wardrobeItems.length && !starterLoading && <button className="starter-cta-mobile" onClick={activateStarterWardrobe}><span>⚡</span><div><b>不想上传衣服？先用预设衣柜体验</b><small>12 件基础单品已配好，只差你的全身照</small></div><i>→</i></button>}
+      {starterLoading && <section className="starter-progress-mobile"><span className="spinner" /> 正在准备预设衣柜…</section>}
       <section className="prompt-card">
         <div className="prompt-head"><span><Icon name="spark" /> AI 穿搭灵感</span><b>剩余 {generationsLeft} / 5 次</b></div>
         <div className="scene-row">{scenes.map(item => <button key={item} className={scene === item ? "active" : ""} onClick={() => setScene(item)}>{item}</button>)}</div>
@@ -1035,8 +1037,6 @@ export default function Home() {
         <div className="mobile-composer-foot"><button className="mobile-mode-select" onClick={cycleScope}>{scope}⌄</button><button className="generate-button" onClick={generateLooks} disabled={loading}>{loading ? <><span className="spinner" />搭配中...</> : <>生成三套 <Icon name="arrow" /></>}</button></div>
       </section>
       {!wardrobeItems.length && <button className="quick-start-mobile" onClick={() => setTab("wardrobe")}><span>✦</span><div><b>先把常穿单品放进衣柜</b><small>所有推荐都会严格使用你的真实衣物</small></div><i>→</i></button>}
-      {!wardrobeItems.length && !starterLoading && <button className="starter-cta-mobile" onClick={activateStarterWardrobe}><span>⚡</span><div><b>不想上传？先用预设衣柜体验</b><small>12 件基础单品已配好，只差你的全身照</small></div><i>→</i></button>}
-      {starterLoading && <section className="starter-progress-mobile"><span className="spinner" /> 正在准备预设衣柜…</section>}
       {!showResults && !loading && <section className="closet-glance"><div className="section-heading"><div><span className="micro-label">MY CLOSET</span><h3>{wardrobeItems.length ? `衣柜里有 ${wardrobeItems.length} 件衣服` : "从第一件衣服开始建立衣柜"}</h3></div><button onClick={() => setTab("wardrobe")}>{wardrobeItems.length ? "去看看" : "立即上传"} →</button></div>{wardrobeItems.length ? <div className="glance-grid real-glance">{wardrobeItems.slice(0, 4).map(item => <div key={item.id}><img src={item.imageUrl} alt={item.name} /><span>{item.category}</span></div>)}</div> : <div className="closet-empty-glance"><span>＋</span><p>拍一张衣物照片，易搭会自动抠图和整理标签</p></div>}</section>}
       {loading && <Thinking phase={recommendationPhase} />}
       <div className="results-anchor" />
