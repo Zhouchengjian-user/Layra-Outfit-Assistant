@@ -34,7 +34,17 @@ function presentItem(item: Record<string, unknown>) {
   const color = String(item.colorName || "未识别");
   const season = String(item.season || "四季");
   const style = String(item.style || "简约");
-  return { ...item, aiTags: parseTags(item.aiTags, { category, color, season, style }) };
+  const aiTags = parseTags(item.aiTags, { category, color, season, style }) as GarmentAITags & { starterGender?: string };
+  // 保留预设衣柜标记（normalize 会丢弃扩展字段）
+  try {
+    const raw = typeof item.aiTags === "string" ? JSON.parse(item.aiTags) : item.aiTags;
+    if (raw && typeof raw === "object" && "starterGender" in raw) {
+      aiTags.starterGender = String((raw as Record<string, unknown>).starterGender);
+    }
+  } catch {
+    // 忽略解析失败
+  }
+  return { ...item, aiTags };
 }
 
 function json(payload: unknown, owner: Owner, status = 200) {

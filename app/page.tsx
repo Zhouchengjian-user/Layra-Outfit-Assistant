@@ -27,7 +27,7 @@ type Scope = "仅个人衣柜" | "衣柜＋建议添置" | "灵感扩展";
 type ChatMessage = { role: "user" | "assistant"; text: string };
 type WardrobeItem = {
   id: string; name: string; category: string; colorName: string; colorHex: string;
-  season: string; style: string; status: "available" | "washing"; createdAt: number; imageUrl: string; aiTags: GarmentAITags; tagVersion: number;
+  season: string; style: string; status: "available" | "washing"; createdAt: number; imageUrl: string; aiTags: GarmentAITags & { starterGender?: "女" | "男" }; tagVersion: number;
 };
 type GarmentDraft = ProcessedGarmentImage & { id: string; selected: boolean };
 type ModelProfile = { quality: string; createdAt: number; updatedAt: number; imageUrl: string };
@@ -197,9 +197,9 @@ export default function Home() {
   }, []);
 
   // 当前已启用的预设衣柜性别（无则 null）；区分“预设单品”与“自己上传的衣物”
-  const currentStarterGender: "女" | "男" | null = wardrobeItems.some(item => item.aiTags && (item.aiTags as Record<string, unknown>).starterGender === "男") ? "男"
-    : wardrobeItems.some(item => item.aiTags && (item.aiTags as Record<string, unknown>).starterGender === "女") ? "女" : null;
-  const ownGarmentCount = wardrobeItems.filter(item => !(item.aiTags as Record<string, unknown>).starterGender).length;
+  const currentStarterGender: "女" | "男" | null = wardrobeItems.some(item => item.aiTags?.starterGender === "男") ? "男"
+    : wardrobeItems.some(item => item.aiTags?.starterGender === "女") ? "女" : null;
+  const ownGarmentCount = wardrobeItems.filter(item => !item.aiTags?.starterGender).length;
 
   const reviewOutfit = async () => {
     if (selectedItems.length < 2 || reviewLoading) return;
@@ -865,13 +865,19 @@ export default function Home() {
 
   const removeStarterWardrobe = async () => {
     if (starterLoading) return;
+    setShowStarterPicker(false);
+    setTab("wardrobe");
+    if (!currentStarterGender) {
+      // 没有启用预设：只是切到自己的衣柜视图
+      notify(ownGarmentCount ? `你当前的衣柜就是自己的 ${ownGarmentCount} 件衣服` : "衣柜还是空的，可以上传或启用预设衣柜");
+      return;
+    }
     setStarterLoading(true);
     try {
       await requestJson("/api/wardrobe/starter?gender=all", { method: "DELETE", timeoutMs: 30_000 });
       const fresh = await requestJson<{ items?: WardrobeItem[] }>("/api/wardrobe", { timeoutMs: 20_000 });
       setWardrobeItems(fresh.data.items || []);
       setStarterGender(null);
-      setShowStarterPicker(false);
       notify(ownGarmentCount ? `已切回你的衣柜（${ownGarmentCount} 件自己的衣服还在）` : "已移除预设单品");
     } catch (error) {
       notify(error instanceof Error ? error.message : "移除预设衣柜失败，请稍后重试");
@@ -1130,7 +1136,7 @@ export default function Home() {
       <BottomNav tab={tab} setTab={setTab} />
 
       {showSwapModal && <ModalFrame onClose={() => setShowSwapModal(false)} panelClassName="compact-modal"><button className="modal-close" onClick={() => setShowSwapModal(false)}>×</button><span className="micro-label">从衣柜选择替换单品</span><h3>换一件{swapCategory}</h3><div className="swap-grid">{wardrobeItems.filter(item => item.category === swapCategory).map(item => <button key={item.id} onClick={() => swapItem(item.id)}><img src={item.imageUrl} alt={item.name} /><small>{item.name}</small></button>)}{!wardrobeItems.some(item => item.category === swapCategory) && <p className="empty-hint">衣柜里暂时没有{swapCategory}，先去「我的衣柜」上传吧</p>}</div></ModalFrame>}
-      {showStarterPicker && <ModalFrame onClose={() => setShowStarterPicker(false)} panelClassName="compact-modal"><button className="modal-close" onClick={() => setShowStarterPicker(false)}>×</button><span className="micro-label">STARTER CLOSET</span><h3>选择衣柜</h3><p>女生 / 男生各一套 12 件真实单品。切换或移除预设单品时，<b>你自己上传的衣服都会保留</b>。</p><div className="starter-gender-grid"><button className={currentStarterGender === "女" ? "active" : ""} onClick={() => { setProfile(value => ({ ...value, gender: "女" })); saveProfile({ ...profile, gender: "女" }, stylePrefs); setShowStarterPicker(false); activateStarterWardrobe("女"); }}><b>{currentStarterGender === "女" ? "✓ 女生衣柜（当前）" : "女生衣柜"}</b><small>针织衫 · 连衣裙 · 玛丽珍鞋…</small></button><button className={currentStarterGender === "男" ? "active" : ""} onClick={() => { setProfile(value => ({ ...value, gender: "男" })); saveProfile({ ...profile, gender: "男" }, stylePrefs); setShowStarterPicker(false); activateStarterWardrobe("男"); }}><b>{currentStarterGender === "男" ? "✓ 男生衣柜（当前）" : "男生衣柜"}</b><small>T恤 · 西装 · 德比鞋…</small></button></div>{currentStarterGender && <button className="starter-back-own" onClick={removeStarterWardrobe} disabled={starterLoading}>{starterLoading ? "正在移除…" : `↩ 切回我的衣柜（保留自己上传的 ${ownGarmentCount} 件）`}</button>}</ModalFrame>}
+      {showStarterPicker && <ModalFrame onClose={() => setShowStarterPicker(false)} panelClassName="compact-modal"><button className="modal-close" onClick={() => setShowStarterPicker(false)}>×</button><span className="micro-label">STARTER CLOSET</span><h3>选择衣柜</h3><p>女生 / 男生各一套 12 件真实单品。切换或移除预设单品时，<b>你自己上传的衣服都会保留</b>。</p><div className="starter-gender-grid"><button className={currentStarterGender === "女" ? "active" : ""} onClick={() => { setProfile(value => ({ ...value, gender: "女" })); saveProfile({ ...profile, gender: "女" }, stylePrefs); setShowStarterPicker(false); activateStarterWardrobe("女"); }}><b>{currentStarterGender === "女" ? "✓ 女生衣柜（当前）" : "女生衣柜"}</b><small>针织衫 · 连衣裙 · 玛丽珍鞋…</small></button><button className={currentStarterGender === "男" ? "active" : ""} onClick={() => { setProfile(value => ({ ...value, gender: "男" })); saveProfile({ ...profile, gender: "男" }, stylePrefs); setShowStarterPicker(false); activateStarterWardrobe("男"); }}><b>{currentStarterGender === "男" ? "✓ 男生衣柜（当前）" : "男生衣柜"}</b><small>T恤 · 西装 · 德比鞋…</small></button></div><button className="starter-back-own" onClick={removeStarterWardrobe} disabled={starterLoading}>{starterLoading ? "正在移除…" : `↩ 我的衣柜（${ownGarmentCount} 件自己的衣服）${currentStarterGender ? " · 移除预设" : " · 不使用预设"}`}</button></ModalFrame>}
       {showTryOn && <ModalFrame onClose={() => setShowTryOn(false)} closeDisabled={tryOnLoading} panelClassName="personal-tryon-modal"><button className="modal-close" disabled={tryOnLoading} onClick={() => setShowTryOn(false)}>×</button>{tryOnLoading ? <div className="tryon-progress"><div className="tryon-person"><span /><i /></div><span className="micro-label">PERSONAL LOOK GENERATION</span><h3>{tryOnPhase === "recovering" ? "正在恢复上次的效果图" : "正在把这套衣服穿到你身上"}</h3><p>{tryOnPhase === "recovering" ? "无需重新生成，易搭正在读取上次已经提交的结果。" : "易搭正在对齐你的脸部、身材比例和衣柜单品，通常需要几十秒。"}</p><div className="tryon-progress-line"><i /></div></div> : <><div className="personal-tryon-image"><img src={tryOnUrl} alt="我的AI穿搭完整效果图" /></div><div className="personal-tryon-copy"><span className="micro-label">YOUR OUTFIT PREVIEW</span><h3>{recommendations.find(item => item.id === selectedRecommendationId)?.title || "你的今日穿搭"}</h3><p>{recommendations.find(item => item.id === selectedRecommendationId)?.reason}</p><div className="tryon-chat"><input value={tryOnChatInput} onChange={event => setTryOnChatInput(event.target.value)} onKeyDown={event => { if (event.key === "Enter") sendTryOnChat(); }} placeholder="边看边说：换鞋 / 换外套…" /><button onClick={sendTryOnChat}>发送</button></div><div className="tryon-actions"><button className="save-btn" onClick={saveCurrentOutfit} disabled={saveLoading}>{saveLoading ? "保存中…" : "☆ 收藏这套搭配"}</button><button onClick={() => setShowTryOn(false)}>完成</button></div></div></>}</ModalFrame>}
 
 
