@@ -20,7 +20,6 @@ import {
   type TaskPhase,
 } from "./lib/outfit-client";
 import { ModalFrame } from "./components/modal-frame";
-import { renderStarterGarment, starterGarments } from "./lib/starter-wardrobe";
 
 type Tab = "home" | "wardrobe" | "create" | "inspiration" | "saved" | "profile";
 type Scene = "通勤" | "约会" | "休闲" | "聚会" | "运动" | "正式活动";
@@ -152,6 +151,7 @@ export default function Home() {
   const [wardrobeItems, setWardrobeItems] = useState<WardrobeItem[]>([]);
   const [wardrobeLoading, setWardrobeLoading] = useState(true);
   const [starterLoading, setStarterLoading] = useState(false);
+  const [starterGender, setStarterGender] = useState<"女" | "男" | null>(null);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploadProcessing, setUploadProcessing] = useState(false);
   const [uploadSaving, setUploadSaving] = useState(false);
@@ -175,6 +175,7 @@ export default function Home() {
   const [city, setCity] = useState("杭州");
   const [showWeather, setShowWeather] = useState(false);
   const [showProfileEdit, setShowProfileEdit] = useState(false);
+  const [showStarterPicker, setShowStarterPicker] = useState(false);
   const [profile, setProfile] = useState({ nickname: "阿禾", gender: "女", height: "168", weight: "55", bodyType: "直筒型" });
   const [chatInput, setChatInput] = useState("");
   const [chatTyping, setChatTyping] = useState(false);
@@ -819,58 +820,51 @@ export default function Home() {
     }
   };
 
-  const activateStarterWardrobe = async () => {
+  const activateStarterWardrobe = async (genderOverride?: "女" | "男") => {
     if (starterLoading) return;
-    if (wardrobeItems.some(item => item.id.startsWith("starter-"))) {
-      notify("预设衣柜已经在你的衣柜里了，可以直接开始推荐");
-      return;
-    }
     if (wardrobeItems.length >= 8) {
       notify("衣柜里已经有衣服了，可以直接开始推荐");
       return;
     }
+    const targetGender = genderOverride || (profile.gender === "男" ? "男" : "女");
+    setStarterGender(targetGender);
     setStarterLoading(true);
-    notify("正在为你准备一套基础衣柜…");
-    const saved = new Array<WardrobeItem | null>(starterGarments.length).fill(null);
-    const errors = new Array<string | null>(starterGarments.length).fill(null);
+    notify(targetGender === "男" ? "正在为你生成男生基础衣柜…" : "正在为你生成女生基础衣柜…");
     try {
-      let nextIndex = 0;
-      async function saveWorker() {
-        while (nextIndex < starterGarments.length) {
-          const index = nextIndex++;
-          const garment = starterGarments[index];
-          try {
-            const blob = await renderStarterGarment(garment);
-            const form = new FormData();
-            form.append("image", blob, `${garment.id}.png`);
-            form.append("name", garment.name);
-            form.append("category", garment.category);
-            form.append("colorName", garment.colorName);
-            form.append("colorHex", garment.colorHex);
-            form.append("season", garment.season);
-            form.append("style", garment.style);
-            form.append("aiTags", JSON.stringify(garment.aiTags));
-            const { data: payload } = await requestJson<{ item: WardrobeItem }>("/api/wardrobe", { method: "POST", body: form, timeoutMs: 45_000 });
-            saved[index] = payload.item;
-          } catch (error) {
-            errors[index] = error instanceof Error ? error.message : "保存失败";
-          }
-        }
+      const { data: payload } = await requestJson<{ saved: number; reused?: boolean; items?: Array<{ id: string; name: string; category: string; colorName: string; colorHex: string; season: string; style: string }> }>("/api/wardrobe/starter", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ gender: targetGender }),
+        timeoutMs: 240_000,
+      });
+      if (payload.reused) {
+        notify("你的预设衣柜已经准备好了，可以直接开始推荐");
+      } else if (payload.saved) {
+        notify(`已放入 ${payload.saved} 件${targetGender === "男" ? "男生" : "女生"}基础单品，上传全身照就能开始体验`);
       }
-      await Promise.all(Array.from({ length: Math.min(4, starterGarments.length) }, () => saveWorker()));
-      const completed = saved.filter((item): item is WardrobeItem => item !== null);
-      if (completed.length) {
-        setWardrobeItems(current => [...completed, ...current]);
-        notify(`已放入 ${completed.length} 件基础单品，上传全身照就能开始体验`);
-        setTab("home");
-      } else {
-        notify(errors.find(Boolean) || "预设衣柜暂时没有准备好，请稍后重试");
+      if (payload.items?.length) {
+        const mapped: WardrobeItem[] = payload.items.map(item => ({
+          ...item,
+          status: "available" as const,
+          createdAt: Date.now(),
+          imageUrl: `/api/wardrobe?image=${item.id}`,
+          aiTags: { version: 2 as const, subcategory: item.category, material: "", pattern: "", fit: "", length: "", colorTone: "", colorFamily: item.colorName, colorTemperature: "", lightness: "", saturation: "", layer: "", silhouette: "", visualWeight: "", waistline: "", rise: "", legShape: "", patternScale: "", statementLevel: 1, role: "", layering: [], warmth: 3, formality: 3, styles: [], occasions: [], seasons: [], weather: [] },
+          tagVersion: 2,
+        }));
+        setWardrobeItems(current => [...mapped, ...current]);
       }
+      setTab("home");
     } catch (error) {
-      notify(error instanceof Error ? error.message : "预设衣柜暂时没有准备好");
+      notify(error instanceof Error ? error.message : "预设衣柜暂时没有准备好，请稍后重试");
     } finally {
       setStarterLoading(false);
     }
+  };
+
+  const openStarterPicker = () => {
+    if (starterLoading) return;
+    // 始终先让用户明确选择性别，避免默认值猜错
+    setShowStarterPicker(true);
   };
 
   const updateWardrobeItem = async (id: string, patch: Partial<WardrobeItem>) => {
@@ -1028,7 +1022,7 @@ export default function Home() {
       <header className="app-header"><div className="mobile-brand"><img src="/yida-logo.png" alt="易搭" /><div><span className="micro-label">易搭 · THURSDAY, 13 AUG</span><h2>早上好，{profile.nickname}</h2></div></div><button className="avatar" onClick={() => setTab("profile")}>{profile.nickname.slice(0, 1)}</button></header>
       <button className="weather-strip" onClick={() => setShowWeather(true)}><div className="weather-icon"><Icon name="sun" /></div><div><b>{city} {weather.temperature}° / {weather.condition}</b><span>天气已同步 · 体感 {weather.apparent}°</span></div><small>穿薄层 ›</small></button>
       <ModelProfileStrip profile={modelProfile} uploading={modelUploading} onUpload={() => modelFileRef.current?.click()} />
-      {!wardrobeItems.length && !starterLoading && <button className="starter-cta-mobile" onClick={activateStarterWardrobe}><span>⚡</span><div><b>不想上传衣服？先用预设衣柜体验</b><small>12 件基础单品已配好，只差你的全身照</small></div><i>→</i></button>}
+      {!wardrobeItems.length && !starterLoading && <button className="starter-cta-mobile" onClick={openStarterPicker}><span>⚡</span><div><b>不想上传衣服？先用预设衣柜体验</b><small>{starterGender === "男" ? "男生基础单品已配好，只差你的全身照" : "女生基础单品已配好，只差你的全身照"}</small></div><i>→</i></button>}
       {starterLoading && <section className="starter-progress-mobile"><span className="spinner" /> 正在准备预设衣柜…</section>}
       <section className="prompt-card">
         <div className="prompt-head"><span><Icon name="spark" /> AI 穿搭灵感</span><b>剩余 {generationsLeft} / 5 次</b></div>
@@ -1078,7 +1072,7 @@ export default function Home() {
           <section className="studio-composer chat-composer"><textarea value={prompt} onChange={event => setPrompt(event.target.value)} placeholder={prompts[promptIndex]} aria-label="描述今天想要的穿搭" /><div className="composer-actions"><div className="composer-left"><button className="add-round" onClick={() => openUploadPicker("replace")}>＋</button><button className="single-scope" onClick={cycleScope}>{scope}<span>⌄</span></button></div><button className="primary-generate" onClick={generateLooks} disabled={loading}>{loading ? "正在搭配…" : "生成 3 套搭配"}<span>→</span></button></div></section>
           {loading && <Thinking phase={recommendationPhase} />}
           <div className="results-anchor" />
-          {showResults ? resultsBlock : <><section className="quick-start-panel"><div><span>开始推荐前</span><h3>{wardrobeItems.length ? `已从衣柜同步 ${wardrobeItems.length} 件单品` : "先添加你的真实衣物"}</h3><p>{wardrobeItems.length ? "易搭只会从这些单品里给你三个答案，不会偷偷加入陌生衣服。" : "上传、抠图并确认入柜后，才能生成真正属于你的搭配。"}</p></div><div className="quick-start-actions"><button onClick={() => setTab("wardrobe")}>{wardrobeItems.length ? "检查衣柜" : "去添加衣物"} →</button>{!wardrobeItems.length && <button className="starter-cta-desktop" onClick={activateStarterWardrobe} disabled={starterLoading}>{starterLoading ? "正在准备…" : "⚡ 先用预设衣柜（12 件）"}</button>}</div></section><ShortcutSection setTab={setTab} /></>}
+          {showResults ? resultsBlock : <><section className="quick-start-panel"><div><span>开始推荐前</span><h3>{wardrobeItems.length ? `已从衣柜同步 ${wardrobeItems.length} 件单品` : "先添加你的真实衣物"}</h3><p>{wardrobeItems.length ? "易搭只会从这些单品里给你三个答案，不会偷偷加入陌生衣服。" : "上传、抠图并确认入柜后，才能生成真正属于你的搭配。"}</p></div><div className="quick-start-actions"><button onClick={() => setTab("wardrobe")}>{wardrobeItems.length ? "检查衣柜" : "去添加衣物"} →</button>{!wardrobeItems.length && <button className="starter-cta-desktop" onClick={openStarterPicker} disabled={starterLoading}>{starterLoading ? "正在准备…" : "⚡ 先用预设衣柜"}</button>}</div></section><ShortcutSection setTab={setTab} /></>}
         </div>{mobileHome}</>}
 
         {tab === "wardrobe" && <div className="screen wardrobe-screen">
@@ -1088,7 +1082,7 @@ export default function Home() {
           <div className="wardrobe-toolbar"><div className="filter-row">{filters.map(filter => <button key={filter} className={closetFilter === filter ? "active" : ""} onClick={() => setClosetFilter(filter)}>{filter}</button>)}</div><span>{closetFilter === "全部" ? "全部单品" : closetFilter} · {filteredWardrobe.length}</span></div>
           {wardrobeLoading ? <div className="wardrobe-loading"><span className="spinner" /> 正在同步衣柜…</div> : filteredWardrobe.length ? <div className="wardrobe-grid saved-wardrobe-grid">
             {filteredWardrobe.map(item => <article className={`wardrobe-item saved-garment ${item.status === "washing" ? "is-washing" : ""}`} key={item.id}><div className="uploaded-wrap product-white"><img src={item.imageUrl} alt={item.name} loading="lazy" /><span className="ai-tag">{item.status === "washing" ? "清洗中" : "已入柜"}</span><i className="garment-color-dot" style={{ background: item.colorHex }} /></div><b>{item.name}</b><small>{item.colorName} · {item.category} · {item.season}</small><div className="wardrobe-ai-tags">{garmentTagLabels(item.aiTags).slice(0, 5).map(tag => <span key={tag}>{tag}</span>)}<span>正式 {item.aiTags.formality}/5</span><span>保暖 {item.aiTags.warmth}/5</span></div><div className="wardrobe-actions"><button onClick={() => setEditingWardrobe(item)}>编辑</button><button onClick={() => updateWardrobeItem(item.id, { status: item.status === "washing" ? "available" : "washing" })}>{item.status === "washing" ? "恢复可穿" : "标记清洗"}</button><button onClick={() => deleteWardrobeItem(item)}>删除</button></div></article>)}
-          </div> : <section className="wardrobe-empty"><div><span>＋</span></div><h3>{closetFilter === "全部" ? "衣柜还是空的" : closetFilter === "清洗中" ? "没有清洗中的衣服" : `还没有${closetFilter}`}</h3><p>{closetFilter === "全部" ? "先上传一件常穿的衣服。易搭会自动抠掉背景、识别标签，你只需要确认一下。" : closetFilter === "清洗中" ? "点衣服卡片上的「标记清洗」，它就会出现在这里。" : "可以切换到全部，或上传一件新的单品。"}</p><div className="wardrobe-empty-actions"><button onClick={() => openUploadPicker("replace")}>上传第一件衣服</button>{closetFilter === "全部" && <button className="starter-cta-desktop" onClick={activateStarterWardrobe} disabled={starterLoading}>{starterLoading ? "正在准备…" : "⚡ 先用预设衣柜"}</button>}</div></section>}
+          </div> : <section className="wardrobe-empty"><div><span>＋</span></div><h3>{closetFilter === "全部" ? "衣柜还是空的" : closetFilter === "清洗中" ? "没有清洗中的衣服" : `还没有${closetFilter}`}</h3><p>{closetFilter === "全部" ? "先上传一件常穿的衣服。易搭会自动抠掉背景、识别标签，你只需要确认一下。" : closetFilter === "清洗中" ? "点衣服卡片上的「标记清洗」，它就会出现在这里。" : "可以切换到全部，或上传一件新的单品。"}</p><div className="wardrobe-empty-actions"><button onClick={() => openUploadPicker("replace")}>上传第一件衣服</button>{closetFilter === "全部" && <button className="starter-cta-desktop" onClick={openStarterPicker} disabled={starterLoading}>{starterLoading ? "正在准备…" : "⚡ 先用预设衣柜"}</button>}</div></section>}
           <section className="photo-guide"><span className="micro-label">拍得好，抠得更干净</span><div><p><b>01</b> 衣服平铺或挂直</p><p><b>02</b> 背景干净、颜色有反差</p><p><b>03</b> 光线均匀，避免明显阴影</p></div></section>
         </div>}
 
@@ -1122,6 +1116,7 @@ export default function Home() {
       <BottomNav tab={tab} setTab={setTab} />
 
       {showSwapModal && <ModalFrame onClose={() => setShowSwapModal(false)} panelClassName="compact-modal"><button className="modal-close" onClick={() => setShowSwapModal(false)}>×</button><span className="micro-label">从衣柜选择替换单品</span><h3>换一件{swapCategory}</h3><div className="swap-grid">{wardrobeItems.filter(item => item.category === swapCategory).map(item => <button key={item.id} onClick={() => swapItem(item.id)}><img src={item.imageUrl} alt={item.name} /><small>{item.name}</small></button>)}{!wardrobeItems.some(item => item.category === swapCategory) && <p className="empty-hint">衣柜里暂时没有{swapCategory}，先去「我的衣柜」上传吧</p>}</div></ModalFrame>}
+      {showStarterPicker && <ModalFrame onClose={() => setShowStarterPicker(false)} panelClassName="compact-modal"><button className="modal-close" onClick={() => setShowStarterPicker(false)}>×</button><span className="micro-label">STARTER CLOSET</span><h3>选一套预设衣柜</h3><p>我们为女生和男生各准备了一套 12 件基础单品，选择后会直接放进你的衣柜，之后随时可以换成自己的衣服。</p><div className="starter-gender-grid"><button onClick={() => { setProfile(value => ({ ...value, gender: "女" })); saveProfile({ ...profile, gender: "女" }, stylePrefs); setShowStarterPicker(false); activateStarterWardrobe("女"); }}><b>女生衣柜</b><small>针织衫 · 连衣裙 · 玛丽珍鞋…</small></button><button onClick={() => { setProfile(value => ({ ...value, gender: "男" })); saveProfile({ ...profile, gender: "男" }, stylePrefs); setShowStarterPicker(false); activateStarterWardrobe("男"); }}><b>男生衣柜</b><small>T恤 · 西装 · 德比鞋…</small></button></div></ModalFrame>}
       {showTryOn && <ModalFrame onClose={() => setShowTryOn(false)} closeDisabled={tryOnLoading} panelClassName="personal-tryon-modal"><button className="modal-close" disabled={tryOnLoading} onClick={() => setShowTryOn(false)}>×</button>{tryOnLoading ? <div className="tryon-progress"><div className="tryon-person"><span /><i /></div><span className="micro-label">PERSONAL LOOK GENERATION</span><h3>{tryOnPhase === "recovering" ? "正在恢复上次的效果图" : "正在把这套衣服穿到你身上"}</h3><p>{tryOnPhase === "recovering" ? "无需重新生成，易搭正在读取上次已经提交的结果。" : "易搭正在对齐你的脸部、身材比例和衣柜单品，通常需要几十秒。"}</p><div className="tryon-progress-line"><i /></div></div> : <><div className="personal-tryon-image"><img src={tryOnUrl} alt="我的AI穿搭完整效果图" /></div><div className="personal-tryon-copy"><span className="micro-label">YOUR OUTFIT PREVIEW</span><h3>{recommendations.find(item => item.id === selectedRecommendationId)?.title || "你的今日穿搭"}</h3><p>{recommendations.find(item => item.id === selectedRecommendationId)?.reason}</p><div className="tryon-chat"><input value={tryOnChatInput} onChange={event => setTryOnChatInput(event.target.value)} onKeyDown={event => { if (event.key === "Enter") sendTryOnChat(); }} placeholder="边看边说：换鞋 / 换外套…" /><button onClick={sendTryOnChat}>发送</button></div><div className="tryon-actions"><button className="save-btn" onClick={saveCurrentOutfit} disabled={saveLoading}>{saveLoading ? "保存中…" : "☆ 收藏这套搭配"}</button><button onClick={() => setShowTryOn(false)}>完成</button></div></div></>}</ModalFrame>}
 
 
