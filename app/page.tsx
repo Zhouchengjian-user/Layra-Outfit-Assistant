@@ -88,12 +88,6 @@ const garments = [
   { id: 8, name: "黑色棒球帽", type: "帽子", color: "black", meta: "黑色 · 棉质", season: "四季" },
 ];
 
-const looks = [
-  { id: 1, label: "松弛通勤", note: "清爽，有点小讲究", score: 94, colors: ["cream", "olive", "charcoal", "caramel"], tags: ["显比例", "办公室友好"] },
-  { id: 2, label: "轻盈层次", note: "温柔但不无聊", score: 91, colors: ["cream", "denim", "white", "wine"], tags: ["清爽", "适合小雨"] },
-  { id: 3, label: "利落松弛", note: "下班也可以直接去约会", score: 89, colors: ["olive", "denim", "black", "white"], tags: ["轻复古", "不费力"] },
-];
-
 const inspirationThemes = [
   { id: 1, title: "清爽学院感", desc: "适合上课与周末看展", colors: ["cream", "denim", "white"] },
   { id: 2, title: "不费力通勤", desc: "利落但没有距离感", colors: ["olive", "charcoal", "caramel"] },
@@ -141,9 +135,7 @@ export default function Home() {
   const [prompt, setPrompt] = useState("");
   const [scene, setScene] = useState<Scene>("通勤");
   const scope: Scope = "仅个人衣柜";
-  const [selectedLook, setSelectedLook] = useState<number | null>(null);
   const [showResults, setShowResults] = useState(false);
-  const [showModel, setShowModel] = useState(false);
   const [recommendationPhase, setRecommendationPhase] = useState<TaskPhase>("idle");
   const [generationsLeft, setGenerationsLeft] = useState(5);
   const [recommendations, setRecommendations] = useState<OutfitRecommendation[]>([]);
@@ -176,10 +168,8 @@ export default function Home() {
   const [swapCategory, setSwapCategory] = useState("");
   const [tryOnChatInput, setTryOnChatInput] = useState("");
   const [toast, setToast] = useState("");
-  const [savedLooks, setSavedLooks] = useState<number[]>([]);
-  const [washingItems] = useState<number[]>([3]);
   const [stylePrefs, setStylePrefs] = useState<string[]>(["松弛感", "简约"]);
-  const [styleIntensity, setStyleIntensity] = useState<StyleIntensity>("有点风格");
+  const [styleIntensity] = useState<StyleIntensity>("有点风格");
   const [city, setCity] = useState("杭州");
   const [showWeather, setShowWeather] = useState(false);
   const [showProfileEdit, setShowProfileEdit] = useState(false);
@@ -188,7 +178,6 @@ export default function Home() {
   const [chatTyping, setChatTyping] = useState(false);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([{ role: "assistant", text: "三套都来自你的衣柜。想换颜色、鞋子或调整正式程度，直接告诉我。" }]);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
-  const [planned, setPlanned] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const modelFileRef = useRef<HTMLInputElement>(null);
   const uploadModeRef = useRef<"replace" | "append">("replace");
@@ -295,24 +284,64 @@ export default function Home() {
     }
   };
 
-  useEffect(() => {
-    if (!ownerReady) return;
-    loadSavedOutfits();
-  }, [ownerReady, loadSavedOutfits]);
+  const likeTheme = (themeTitle: string) => {
+    setStylePrefs(current => {
+      const next = current.includes(themeTitle) ? current : [...current, themeTitle].slice(0, 6);
+      saveProfile(profile, next);
+      return next;
+    });
+    notify(`已把「${themeTitle}」加入你的风格偏好`);
+  };
 
-  const loadHistory = useCallback(async () => {
-    try {
-      const { data } = await requestJson<{ history: HistoryEntry[] }>("/api/outfits/history", { timeoutMs: 15_000 });
-      setHistory(data.history || []);
-    } catch {
-      // 加载失败忽略
+  const saveThemeAsOutfit = async (theme: { title: string; colors: string[] }) => {
+    const themeFamilyMap: Record<string, string[]> = {
+      cream: ["米色", "白色", "奶油"], olive: ["绿色", "橄榄"], denim: ["蓝色", "牛仔"],
+      charcoal: ["黑色", "灰色", "炭"], caramel: ["棕色", "焦糖"], white: ["白色"],
+      wine: ["红色", "酒红"], black: ["黑色"],
+    };
+    const families = theme.colors.flatMap(color => themeFamilyMap[color] || []);
+    const matches = wardrobeItems.filter(item => item.status === "available" && families.some(family => item.colorName.includes(family) || item.aiTags.colorFamily === family));
+    const byCategory = new Map<string, WardrobeItem>();
+    for (const item of matches) {
+      if (!byCategory.has(item.category)) byCategory.set(item.category, item);
     }
-  }, []);
+    const picked = [...byCategory.values()].slice(0, 6);
+    if (picked.length < 2) {
+      notify("衣柜里还没有足够匹配这个灵感的单品，先去上传一些衣服吧");
+      setTab("wardrobe");
+      return;
+    }
+    try {
+      await requestJson("/api/outfits/saved", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ itemIds: picked.map(item => item.id), title: `灵感 · ${theme.title}`, scene: "休闲" }),
+        timeoutMs: 20_000,
+      });
+      await requestJson<{ saved: SavedOutfit[] }>("/api/outfits/saved", { timeoutMs: 15_000 }).then(({ data }) => setSavedOutfits(data.saved || []));
+      notify("灵感已收藏到「我的搭配」，可以用衣柜复刻");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "收藏失败");
+    }
+  };
 
   useEffect(() => {
     if (!ownerReady) return;
-    loadHistory();
-  }, [ownerReady, loadHistory]);
+    let active = true;
+    requestJson<{ saved: SavedOutfit[] }>("/api/outfits/saved", { timeoutMs: 15_000 })
+      .then(({ data }) => { if (active) setSavedOutfits(data.saved || []); })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, [ownerReady]);
+
+  useEffect(() => {
+    if (!ownerReady) return;
+    let active = true;
+    requestJson<{ history: HistoryEntry[] }>("/api/outfits/history", { timeoutMs: 15_000 })
+      .then(({ data }) => { if (active) setHistory(data.history || []); })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, [ownerReady]);
 
   const saveProfile = async (nextProfile: typeof profile, nextStylePrefs: string[]) => {
     try {
@@ -374,13 +403,31 @@ export default function Home() {
   useEffect(() => {
     try {
       const saved = localStorage.getItem("yida:city");
-      if (saved) setCity(saved);
+      if (saved) {
+        const timer = window.setTimeout(() => setCity(saved), 0);
+        return () => window.clearTimeout(timer);
+      }
     } catch { /* 忽略 */ }
+    return undefined;
   }, []);
 
   useEffect(() => {
     try { localStorage.setItem("yida:city", city); } catch { /* 忽略 */ }
   }, [city]);
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("yida:generations");
+      if (!saved) return;
+      const parsed = JSON.parse(saved) as { date: string; left: number };
+      const today = new Date().toISOString().slice(0, 10);
+      if (parsed.date === today) {
+        const timer = window.setTimeout(() => setGenerationsLeft(Math.max(0, Math.min(5, Number(parsed.left) || 5))), 0);
+        return () => window.clearTimeout(timer);
+      }
+    } catch { /* 忽略 */ }
+    return undefined;
+  }, []);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -537,7 +584,11 @@ export default function Home() {
       });
       revealRecommendations(payload);
       setRecommendationPhase("succeeded");
-      setGenerationsLeft(value => Math.max(0, value - 1));
+      setGenerationsLeft(value => {
+        const next = Math.max(0, value - 1);
+        try { localStorage.setItem("yida:generations", JSON.stringify({ date: new Date().toISOString().slice(0, 10), left: next })); } catch { /* 忽略 */ }
+        return next;
+      });
       const savedPrompt = prompt || `${scene}穿搭推荐`;
     setHistory(current => [{ id: Date.now().toString(), scene, prompt: savedPrompt, result: {}, createdAt: Date.now() }, ...current].slice(0, 10));
     const historyRecs = (payload.recommendations || []).map(rec => ({
@@ -580,8 +631,8 @@ export default function Home() {
     }
   };
 
-  const generateTryOn = async () => {
-    const recommendation = recommendations.find(item => item.id === selectedRecommendationId);
+  const generateTryOn = async (recommendationOverride?: OutfitRecommendation) => {
+    const recommendation = recommendationOverride || recommendations.find(item => item.id === selectedRecommendationId);
     if (!recommendation) { notify("请先选择一套搭配"); return; }
     if (!modelProfile) { modelFileRef.current?.click(); return; }
     setTryOnContext({ itemIds: recommendation.itemIds, title: recommendation.title, scene });
@@ -625,6 +676,35 @@ export default function Home() {
     } finally {
       tryOnJobActiveRef.current = false;
     }
+  };
+
+  const retrySavedOutfit = async (outfit: SavedOutfit) => {
+    const recommendation: OutfitRecommendation = {
+      id: `saved-${outfit.id}`,
+      title: outfit.title || "我的收藏搭配",
+      reason: "来自你的收藏，点击生成完整效果图",
+      score: 0,
+      itemIds: outfit.itemIds,
+      items: outfit.items.map(item => ({
+        id: item.id,
+        name: item.name,
+        category: item.category,
+        colorName: item.colorName,
+        season: "四季",
+        style: "简约",
+        imageUrl: item.imageUrl,
+      })),
+      highlights: [],
+    };
+    setRecommendations(current => {
+      const filtered = current.filter(rec => rec.id !== recommendation.id);
+      return [recommendation, ...filtered];
+    });
+    setSelectedRecommendationId(recommendation.id);
+    setShowResults(true);
+    setScene(outfit.scene as Scene);
+    setTab("home");
+    await generateTryOn(recommendation);
   };
 
   const handleUpload = async (files: FileList | null) => {
@@ -762,23 +842,81 @@ export default function Home() {
     }
   };
 
-  const toggleSaveLook = (lookId: number) => {
-    setSavedLooks(current => current.includes(lookId) ? current.filter(id => id !== lookId) : [...current, lookId]);
-    notify(savedLooks.includes(lookId) ? "已取消收藏" : "已收藏到「我的搭配」");
-  };
-
   const handleSwapRequest = (text: string) => {
+    setChatTyping(true);
     const category = parseSwapCategory(text);
     if (!category) {
-      setChatMessages(current => [...current, { role: "assistant", text: "你可以说「换鞋」「换外套」「换上装」「换帽子」等，我会从你的衣柜里找替换单品。" }]);
+      const handled = handleStyleAdjustment(text);
+      if (!handled) {
+        if (/更正式|正式一点|商务/.test(text)) {
+          setChatMessages(current => [...current, { role: "assistant", text: "衣柜里暂时没有更正式的同类别单品可以替换，先上传几件西装、皮鞋或通勤衬衫吧。" }]);
+        } else if (/休闲一点|更休闲|随意/.test(text)) {
+          setChatMessages(current => [...current, { role: "assistant", text: "衣柜里暂时没有更休闲的同类别单品可以替换，试试说「换鞋」「换外套」手动挑一件。" }]);
+        } else if (/颜色再克制|颜色克制|更低调|更素/.test(text)) {
+          setChatMessages(current => [...current, { role: "assistant", text: "衣柜里暂时没有更素色（黑/白/灰/米/棕）的同类别单品可以替换，也可以说「换上衣」手动挑一件。" }]);
+        } else {
+          setChatMessages(current => [...current, { role: "assistant", text: "你可以说「换鞋」「换外套」「换上装」「换帽子」等，我会从你的衣柜里找替换单品。" }]);
+        }
+      }
+      setChatTyping(false);
       return;
     }
     if (!selectedRecommendationId) {
       setChatMessages(current => [...current, { role: "assistant", text: "请先在推荐结果里选择一套搭配，再说要换哪件。" }]);
+      setChatTyping(false);
       return;
     }
     setSwapCategory(category);
     setShowSwapModal(true);
+    window.setTimeout(() => setChatTyping(false), 500);
+  };
+
+  const handleStyleAdjustment = (text: string): boolean => {
+    const recommendation = recommendations.find(item => item.id === selectedRecommendationId);
+    if (!recommendation) return false;
+    const wardrobeLookup = new Map(wardrobeItems.map(item => [item.id, item]));
+    const outfitItems = recommendation.items.map(item => wardrobeLookup.get(item.id)).filter((item): item is WardrobeItem => Boolean(item));
+    if (!outfitItems.length) return false;
+    let replaced = false;
+    if (/更正式|正式一点|商务/.test(text)) {
+      const candidates = outfitItems.map(current => {
+        const alternatives = wardrobeItems.filter(item => item.status === "available" && item.category === current.category && item.id !== current.id && item.aiTags.formality > current.aiTags.formality).sort((a, b) => b.aiTags.formality - a.aiTags.formality);
+        return { current, next: alternatives[0] };
+      }).filter(entry => entry.next);
+      const best = candidates.sort((a, b) => b.next.aiTags.formality - a.next.aiTags.formality)[0];
+      if (best) { applyItemSwap(best.current.category, best.next); replaced = true; }
+    } else if (/休闲一点|更休闲|随意/.test(text)) {
+      const candidates = outfitItems.map(current => {
+        const alternatives = wardrobeItems.filter(item => item.status === "available" && item.category === current.category && item.id !== current.id && item.aiTags.formality < current.aiTags.formality).sort((a, b) => a.aiTags.formality - b.aiTags.formality);
+        return { current, next: alternatives[0] };
+      }).filter(entry => entry.next);
+      const best = candidates.sort((a, b) => a.next.aiTags.formality - b.next.aiTags.formality)[0];
+      if (best) { applyItemSwap(best.current.category, best.next); replaced = true; }
+    } else if (/颜色再克制|颜色克制|更低调|更素/.test(text)) {
+      const neutralFamilies = ["黑色", "白色", "灰色", "米色", "棕色"];
+      const candidates = outfitItems.map(current => {
+        const alternatives = wardrobeItems.filter(item => item.status === "available" && item.category === current.category && item.id !== current.id && neutralFamilies.includes(item.aiTags.colorFamily));
+        return { current, next: alternatives[0] };
+      }).filter(entry => entry.next);
+      const colorful = candidates.filter(entry => !neutralFamilies.includes(entry.current.aiTags.colorFamily));
+      const best = (colorful.length ? colorful : candidates).sort((a, b) => (b.current.aiTags.statementLevel || 2) - (a.current.aiTags.statementLevel || 2))[0];
+      if (best) { applyItemSwap(best.current.category, best.next); replaced = true; }
+    }
+    return replaced;
+  };
+
+  const applyItemSwap = (category: string, newItem: WardrobeItem) => {
+    const mapped = { id: newItem.id, name: newItem.name, category: newItem.category, colorName: newItem.colorName, season: newItem.season, style: newItem.style, imageUrl: newItem.imageUrl };
+    setRecommendations(current => current.map(rec => {
+      if (rec.id !== selectedRecommendationId) return rec;
+      const items = [...rec.items];
+      const index = items.findIndex(item => item.category === category);
+      if (index >= 0) items[index] = mapped;
+      else items.push(mapped);
+      return { ...rec, items, itemIds: items.map(item => item.id) };
+    }));
+    setShowSwapModal(false);
+    setChatMessages(current => [...current, { role: "assistant", text: `已把${category}换成「${newItem.name}」，需要的话可以再调整或重新生成效果图。` }]);
   };
 
   const sendChat = () => {
@@ -800,17 +938,7 @@ export default function Home() {
   const swapItem = (itemId: string) => {
     const newItem = wardrobeItems.find(item => item.id === itemId);
     if (!newItem) return;
-    const mapped = { id: newItem.id, name: newItem.name, category: newItem.category, colorName: newItem.colorName, season: newItem.season, style: newItem.style, imageUrl: newItem.imageUrl };
-    setRecommendations(current => current.map(rec => {
-      if (rec.id !== selectedRecommendationId) return rec;
-      const items = [...rec.items];
-      const index = items.findIndex(item => item.category === swapCategory);
-      if (index >= 0) items[index] = mapped;
-      else items.push(mapped);
-      return { ...rec, items, itemIds: items.map(item => item.id) };
-    }));
-    setShowSwapModal(false);
-    setChatMessages(current => [...current, { role: "assistant", text: `已换上「${newItem.name}」` }]);
+    applyItemSwap(swapCategory, newItem);
   };
 
   const locateWeather = () => {
@@ -825,7 +953,6 @@ export default function Home() {
     }, () => notify("定位未授权，请选择常驻城市"), { enableHighAccuracy: false, timeout: 8000 });
   };
 
-  const activeGarments = garments;
   const filters = ["全部", "清洗中", "上衣", "外套", "下装", "鞋履", "配饰", "帽子"];
   const filteredWardrobe = closetFilter === "全部" ? wardrobeItems : closetFilter === "清洗中" ? wardrobeItems.filter(item => item.status === "washing") : wardrobeItems.filter(item => item.category === closetFilter);
   const cycleScope = () => notify("当前阶段的三套推荐只使用个人衣柜");
@@ -915,11 +1042,11 @@ export default function Home() {
           {reviewResult && <section className="review-panel"><div className="review-head"><span className="review-score">{reviewResult.score}<small> 分</small></span><span className="micro-label">AI OUTFIT REVIEW</span></div><div className="review-notes"><div><b>颜色协调</b><span>{reviewResult.breakdown.color}</span></div><div><b>版型比例</b><span>{reviewResult.breakdown.silhouette}</span></div><div><b>场合适配</b><span>{reviewResult.breakdown.occasion}</span></div><div><b>天气适配</b><span>{reviewResult.breakdown.weather}</span></div></div><p className="review-suggestion">{reviewResult.suggestion}</p><button className="review-button" onClick={generateTryOnForCreate} disabled={tryOnLoading}>{tryOnLoading ? "正在生成效果图…" : "生成 AI 试穿效果图"}</button></section>}
         </div>}
 
-        {tab === "inspiration" && <div className="screen inspiration-screen"><header className="sub-header"><div><span className="micro-label">DISCOVER YOUR STYLE</span><h2>穿搭灵感</h2></div><span className="step-chip">为你精选</span></header><p className="lead-copy">喜欢或不感兴趣都会帮助易搭更懂你。收藏后可以直接用自己的衣柜复刻。</p><div className="inspiration-grid">{inspirationThemes.map(theme => <article className="inspiration-card" key={theme.id}><button className="inspiration-visual" onClick={() => { setPrompt(`用我的衣柜复刻${theme.title}`); setTab("home"); }}>{theme.colors.map(color => <GarmentArt key={color} color={color} />)}<span>用我的衣柜复刻 →</span></button><h3>{theme.title}</h3><p>{theme.desc}</p><div><button onClick={() => notify("已加入你的偏好")}>♡ 喜欢</button><button onClick={() => notify("会减少类似灵感")}>不感兴趣</button><button onClick={() => notify("已收藏灵感")}>收藏</button></div></article>)}</div></div>}
+        {tab === "inspiration" && <div className="screen inspiration-screen"><header className="sub-header"><div><span className="micro-label">DISCOVER YOUR STYLE</span><h2>穿搭灵感</h2></div><span className="step-chip">为你精选</span></header><p className="lead-copy">喜欢或不感兴趣都会帮助易搭更懂你。收藏后可以直接用自己的衣柜复刻。</p><div className="inspiration-grid">{inspirationThemes.map(theme => <article className="inspiration-card" key={theme.id}><button className="inspiration-visual" onClick={() => { setPrompt(`用我的衣柜复刻${theme.title}`); setTab("home"); }}>{theme.colors.map(color => <GarmentArt key={color} color={color} />)}<span>用我的衣柜复刻 →</span></button><h3>{theme.title}</h3><p>{theme.desc}</p><div><button onClick={() => likeTheme(theme.title)}>♡ 喜欢</button><button onClick={() => notify("已减少类似灵感")}>不感兴趣</button><button onClick={() => saveThemeAsOutfit(theme)}>收藏</button></div></article>)}</div></div>}
 
         {tab === "saved" && <div className="screen saved-screen">
           <header className="sub-header"><div><span className="micro-label">SAVED LOOKS</span><h2>我的收藏</h2></div><span className="step-chip">{savedOutfits.length} 套</span></header><p className="lead-copy">你收藏的搭配都在这里，可以随时查看、删除或再次试穿。</p>
-          {savedOutfits.length ? <div className="saved-list">{savedOutfits.map(outfit => <article className="saved-card" key={outfit.id}><div className="saved-card-items">{outfit.items.map(item => <img key={item.id} src={item.imageUrl} alt={item.name} />)}</div><div className="saved-card-meta"><b>{outfit.title}</b><small>{outfit.scene} · {outfit.items.length} 件 · {formatHistoryDate(outfit.createdAt)}</small></div><button className="saved-card-del" onClick={() => deleteSavedOutfit(outfit.id)}>删除</button></article>)}</div> : <section className="wardrobe-empty"><div><span>♡</span></div><h3>还没有收藏的搭配</h3><p>生成试穿效果图后，点「☆ 收藏这套搭配」就会出现在这里。</p><button onClick={() => setTab("home")}>去生成一套 →</button></section>}
+          {savedOutfits.length ? <div className="saved-list">{savedOutfits.map(outfit => <article className="saved-card" key={outfit.id}><div className="saved-card-items">{outfit.items.map(item => <img key={item.id} src={item.imageUrl} alt={item.name} />)}</div><div className="saved-card-meta"><b>{outfit.title}</b><small>{outfit.scene} · {outfit.items.length} 件 · {formatHistoryDate(outfit.createdAt)}</small></div><div className="saved-card-actions"><button className="saved-card-tryon" onClick={() => retrySavedOutfit(outfit)}>再次试穿</button><button className="saved-card-del" onClick={() => deleteSavedOutfit(outfit.id)}>删除</button></div></article>)}</div> : <section className="wardrobe-empty"><div><span>♡</span></div><h3>还没有收藏的搭配</h3><p>生成试穿效果图后，点「☆ 收藏这套搭配」就会出现在这里。</p><button onClick={() => setTab("home")}>去生成一套 →</button></section>}
         </div>}
 
         {tab === "profile" && <div className="screen profile-screen">
@@ -930,7 +1057,7 @@ export default function Home() {
           <section className="taste-card"><span className="micro-label">STYLE DNA</span><h3>你的风格偏好</h3><p className="taste-help">点选喜欢的风格，随时可以调整</p><div className="preference-chips">{styleOptions.map(item => <button key={item} className={stylePrefs.includes(item) ? "active" : ""} onClick={() => toggleStyle(item)}>{stylePrefs.includes(item) ? "✓ " : "+ "}{item}</button>)}</div></section>
           <div className="profile-feature-grid"><section className="usage-card"><div><span>今日生成额度</span><b>{generationsLeft} / 5</b></div><div className="usage-track"><i style={{ width: `${generationsLeft * 20}%` }} /></div><small>每日 00:00 自动恢复</small></section><section className="points-card"><span>易搭积分</span><b>260</b><small>上传衣服和完善衣柜可获得积分</small><button onClick={() => notify("积分商城将在后续版本开放")}>查看权益 →</button></section></div>
           <section className="profile-section"><div className="section-heading"><div><span className="micro-label">HISTORY · 30 DAYS</span><h3>最近记录</h3></div><Icon name="history" /></div><div className="history-list">{history.map(item => <button key={item.id} onClick={() => replayHistory(item)}><span>{formatHistoryDate(item.createdAt)}</span><b>{item.scene}</b><p>{item.prompt}</p><i>›</i></button>)}</div></section>
-          <div className="settings-list"><button onClick={() => setShowWeather(true)}>常驻城市 <span>{city} ›</span></button><button>手机号与微信 <span>已绑定 ›</span></button><button>照片与隐私 <span>已授权 ›</span></button></div>
+          <div className="settings-list"><button onClick={() => setShowWeather(true)}>常驻城市 <span>{city} ›</span></button><button onClick={() => notify("手机号登录将在正式版开放")}>手机号与微信 <span>未绑定 ›</span></button><button onClick={() => notify("照片仅用于生成你的专属效果图")}>照片与隐私 <span>已授权 ›</span></button></div>
         </div>}
       </section>
 
@@ -938,9 +1065,6 @@ export default function Home() {
 
       {showSwapModal && <ModalFrame onClose={() => setShowSwapModal(false)} panelClassName="compact-modal"><button className="modal-close" onClick={() => setShowSwapModal(false)}>×</button><span className="micro-label">从衣柜选择替换单品</span><h3>换一件{swapCategory}</h3><div className="swap-grid">{wardrobeItems.filter(item => item.category === swapCategory).map(item => <button key={item.id} onClick={() => swapItem(item.id)}><img src={item.imageUrl} alt={item.name} /><small>{item.name}</small></button>)}{!wardrobeItems.some(item => item.category === swapCategory) && <p className="empty-hint">衣柜里暂时没有{swapCategory}，先去「我的衣柜」上传吧</p>}</div></ModalFrame>}
       {showTryOn && <ModalFrame onClose={() => setShowTryOn(false)} closeDisabled={tryOnLoading} panelClassName="personal-tryon-modal"><button className="modal-close" disabled={tryOnLoading} onClick={() => setShowTryOn(false)}>×</button>{tryOnLoading ? <div className="tryon-progress"><div className="tryon-person"><span /><i /></div><span className="micro-label">PERSONAL LOOK GENERATION</span><h3>{tryOnPhase === "recovering" ? "正在恢复上次的效果图" : "正在把这套衣服穿到你身上"}</h3><p>{tryOnPhase === "recovering" ? "无需重新生成，易搭正在读取上次已经提交的结果。" : "易搭正在对齐你的脸部、身材比例和衣柜单品，通常需要几十秒。"}</p><div className="tryon-progress-line"><i /></div></div> : <><div className="personal-tryon-image"><img src={tryOnUrl} alt="我的AI穿搭完整效果图" /></div><div className="personal-tryon-copy"><span className="micro-label">YOUR OUTFIT PREVIEW</span><h3>{recommendations.find(item => item.id === selectedRecommendationId)?.title || "你的今日穿搭"}</h3><p>{recommendations.find(item => item.id === selectedRecommendationId)?.reason}</p><div className="tryon-chat"><input value={tryOnChatInput} onChange={event => setTryOnChatInput(event.target.value)} onKeyDown={event => { if (event.key === "Enter") sendTryOnChat(); }} placeholder="边看边说：换鞋 / 换外套…" /><button onClick={sendTryOnChat}>发送</button></div><div className="tryon-actions"><button className="save-btn" onClick={saveCurrentOutfit} disabled={saveLoading}>{saveLoading ? "保存中…" : "☆ 收藏这套搭配"}</button><button onClick={() => setShowTryOn(false)}>完成</button></div></div></>}</ModalFrame>}
-
-      {showModel && <ModalFrame onClose={() => setShowModel(false)} panelClassName="model-modal"><button className="modal-close" onClick={() => setShowModel(false)}>×</button><div className="model-visual"><div className="model-silhouette"><span className="model-head" /><span className="model-hair" /><span className="model-top" /><span className="model-leg left" /><span className="model-leg right" /><span className="model-shoe left" /><span className="model-shoe right" /></div><span className="model-badge">系统模特 · 近似你的身材比例</span></div><div className="model-copy"><span className="micro-label">AI MODEL PREVIEW</span><h3>这套，穿上比平铺更好看</h3><p>短上衣和高腰阔腿裤把重心提起来了，橄榄绿也很衬你的中性色偏好。小雨天记得带伞，鞋面沾水后及时擦一下。</p><div className="rating-row"><span>颜色协调 <b>96</b></span><span>版型比例 <b>94</b></span><span>天气适配 <b>93</b></span><span>场合适配 <b>92</b></span></div><button onClick={() => { if (selectedLook) toggleSaveLook(selectedLook); setShowModel(false); }}>{selectedLook && savedLooks.includes(selectedLook) ? "取消收藏" : "收藏到我的搭配"}</button></div></ModalFrame>}
-
 
 
       {uploadOpen && <ModalFrame onClose={closeUpload} closeDisabled={uploadProcessing || uploadSaving} panelClassName="upload-modal" backdropClassName="upload-backdrop"><button className="modal-close" disabled={uploadProcessing || uploadSaving} onClick={closeUpload}>×</button><header className="upload-modal-head"><span className="micro-label">SMART WARDROBE IMPORT</span><h3>{uploadProcessing ? "易搭正在生成高清商品图" : "确认后加入衣柜"}</h3><p>{uploadProcessing ? `正在识别、去除人物并生成高清白底图 ${uploadProgress} / ${Math.max(uploadTotal, 1)} 张` : `已整理 ${garmentDrafts.length} 件单品；点击整张卡片即可切换是否加入衣柜`}</p></header>

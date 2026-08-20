@@ -1,4 +1,4 @@
-import { getServerEnv, requireServerEnv } from "../../../lib/server-env";
+import { requireServerEnv } from "../../../lib/server-env";
 import { getOwner, ownerJson, withOwnerCookie } from "../../../lib/owner";
 import { dbAll, dbFirst } from "../../../lib/db";
 import { storageGet, storagePut } from "../../../lib/storage";
@@ -14,7 +14,6 @@ import {
 } from "../../../lib/ai-tasks";
 
 type ImageRow = { id: string; name: string; category: string; imageKey: string };
-type GenerationPayload = { code?: string; message?: string; output?: { choices?: Array<{ message?: { content?: Array<{ image?: string }> } }> } };
 
 function toBase64(buffer: ArrayBuffer | Uint8Array) {
   const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
