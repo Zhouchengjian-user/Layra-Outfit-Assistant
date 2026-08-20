@@ -3,6 +3,7 @@ import { getOwner, ownerJson } from "../../../lib/owner";
 import { dbAll, dbRun, ensureSchema } from "../../../lib/db";
 import { storageGet, storagePut } from "../../../lib/storage";
 import { starterGarmentsFor } from "../../../lib/starter-wardrobe";
+import sharp from "sharp";
 
 /**
  * 预设衣柜：服务端按性别生成/复用真实商品图，一次生成全局缓存，
@@ -15,6 +16,15 @@ async function fetchImageUrl(url: string, timeoutMs = 60_000): Promise<{ buffer:
   const response = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
   if (!response.ok) throw new Error("预设商品图下载失败");
   return { buffer: await response.arrayBuffer(), contentType: response.headers.get("Content-Type") || "image/png" };
+}
+
+/** 压缩成 512×512 JPEG（白底填充），供衣柜展示与推荐使用，避免大图加载慢/裂图。 */
+async function compressForWardrobe(buffer: ArrayBuffer | Uint8Array): Promise<Buffer> {
+  return sharp(buffer)
+    .resize(512, 512, { fit: "contain", background: { r: 255, g: 255, b: 255, alpha: 1 } })
+    .flatten({ background: "#ffffff" })
+    .jpeg({ quality: 84 })
+    .toBuffer();
 }
 
 async function generateProductImage(drawPrompt: string): Promise<{ buffer: ArrayBuffer; contentType: string }> {
@@ -87,11 +97,13 @@ export async function POST(request: Request) {
     for (let index = 0; index < items.length; index++) {
       const garment = items[index];
       try {
-        const { buffer, contentType } = await cachedProductImage(garment.id, garment.drawPrompt);
+        const { buffer } = await cachedProductImage(garment.id, garment.drawPrompt);
         const id = crypto.randomUUID();
-        const imageKey = `${owner.id}/${id}.${contentType === "image/jpeg" ? "jpg" : "png"}`;
+        // 入库用压缩图（512 JPEG 约 20-40KB），原图保留在全局缓存
+        const compressed = await compressForWardrobe(buffer);
+        const imageKey = `${owner.id}/${id}.jpg`;
         const createdAt = Date.now();
-        await storagePut(imageKey, buffer, contentType);
+        await storagePut(imageKey, compressed, "image/jpeg");
         await dbRun(`INSERT INTO wardrobe_items
           (id, owner_id, name, category, color_name, color_hex, season, style, status, ai_tags, tag_version, image_key, created_at)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'available', ?, 2, ?, ?)`,
