@@ -822,11 +822,12 @@ export default function Home() {
 
   const activateStarterWardrobe = async (genderOverride?: "女" | "男") => {
     if (starterLoading) return;
-    if (wardrobeItems.length >= 8) {
-      notify("衣柜里已经有衣服了，可以直接开始推荐");
-      return;
-    }
     const targetGender = genderOverride || (profile.gender === "男" ? "男" : "女");
+    const currentStarterGender = wardrobeItems.some(item => item.aiTags && (item.aiTags as Record<string, unknown>).starterGender === "男") ? "男"
+      : wardrobeItems.some(item => item.aiTags && (item.aiTags as Record<string, unknown>).starterGender === "女") ? "女" : null;
+    if (currentStarterGender && currentStarterGender !== targetGender) {
+      if (!window.confirm(`切换到${targetGender === "男" ? "男生" : "女生"}衣柜？当前${currentStarterGender === "男" ? "男生" : "女生"}预设单品会被移除，你自己的衣服会保留。`)) return;
+    }
     setStarterGender(targetGender);
     setStarterLoading(true);
     notify(targetGender === "男" ? "正在为你生成男生基础衣柜…" : "正在为你生成女生基础衣柜…");
@@ -842,17 +843,9 @@ export default function Home() {
       } else if (payload.saved) {
         notify(`已放入 ${payload.saved} 件${targetGender === "男" ? "男生" : "女生"}基础单品，上传全身照就能开始体验`);
       }
-      if (payload.items?.length) {
-        const mapped: WardrobeItem[] = payload.items.map(item => ({
-          ...item,
-          status: "available" as const,
-          createdAt: Date.now(),
-          imageUrl: `/api/wardrobe?image=${item.id}`,
-          aiTags: { version: 2 as const, subcategory: item.category, material: "", pattern: "", fit: "", length: "", colorTone: "", colorFamily: item.colorName, colorTemperature: "", lightness: "", saturation: "", layer: "", silhouette: "", visualWeight: "", waistline: "", rise: "", legShape: "", patternScale: "", statementLevel: 1, role: "", layering: [], warmth: 3, formality: 3, styles: [], occasions: [], seasons: [], weather: [] },
-          tagVersion: 2,
-        }));
-        setWardrobeItems(current => [...mapped, ...current]);
-      }
+      // 切换后整体刷新衣柜（旧性别预设已被服务端移除）
+      const fresh = await requestJson<{ items?: WardrobeItem[] }>("/api/wardrobe", { timeoutMs: 20_000 });
+      setWardrobeItems(fresh.data.items || []);
       setTab("home");
     } catch (error) {
       notify(error instanceof Error ? error.message : "预设衣柜暂时没有准备好，请稍后重试");

@@ -1,7 +1,7 @@
 import { getServerEnv, requireServerEnv } from "../../../lib/server-env";
 import { getOwner, ownerJson } from "../../../lib/owner";
 import { dbAll, dbRun, ensureSchema } from "../../../lib/db";
-import { storageGet, storagePut } from "../../../lib/storage";
+import { storageDelete, storageGet, storagePut } from "../../../lib/storage";
 import { starterGarmentsFor } from "../../../lib/starter-wardrobe";
 import sharp from "sharp";
 
@@ -10,7 +10,7 @@ import sharp from "sharp";
  * 之后任何用户秒级入库（图片与标签都真实，可编辑、可参与推荐与试穿）。
  */
 
-type ItemRow = { id: string };
+type ItemRow = { id: string; imageKey: string; aiTags: string };
 
 async function fetchImageUrl(url: string, timeoutMs = 60_000): Promise<{ buffer: ArrayBuffer; contentType: string }> {
   const response = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
@@ -88,7 +88,20 @@ export async function POST(request: Request) {
     // 已有该性别的预设单品则直接返回（幂等，按名称判断，id 每次新建避免全局冲突）
     const existing = await dbAll<ItemRow>(`SELECT id FROM wardrobe_items WHERE owner_id = ? AND name IN (${items.map(() => "?").join(",")})`, [owner.id, ...items.map(item => item.name)]);
     if (existing.length >= items.length) {
-      return ownerJson({ saved: existing.length, reused: true, gender }, owner);
+      return ownerJson({ saved: existing.length, reused: true, gender, starterGender: gender }, owner);
+    }
+
+    // 若已启用其他性别的预设衣柜，先整体移除（含图片），再切换
+    const otherGender = gender === "男" ? "女" : "男";
+    const otherRows = await dbAll<ItemRow>(
+      "SELECT id, image_key AS imageKey, ai_tags AS aiTags FROM wardrobe_items WHERE owner_id = ? AND ai_tags LIKE ?",
+      [owner.id, `%"starterGender":"${otherGender}"%`],
+    );
+    if (otherRows.length) {
+      for (const row of otherRows) {
+        await dbRun("DELETE FROM wardrobe_items WHERE id = ? AND owner_id = ?", [row.id, owner.id]);
+        if (row.imageKey) await storageDelete(row.imageKey).catch(() => undefined);
+      }
     }
 
     const created = new Array<{ id: string; name: string; category: string; colorName: string; colorHex: string; season: string; style: string; aiTags: Record<string, unknown> }>(items.length);
@@ -107,7 +120,7 @@ export async function POST(request: Request) {
         await dbRun(`INSERT INTO wardrobe_items
           (id, owner_id, name, category, color_name, color_hex, season, style, status, ai_tags, tag_version, image_key, created_at)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'available', ?, 2, ?, ?)`,
-          [id, owner.id, garment.name, garment.category, garment.colorName, garment.colorHex, garment.season, garment.style, JSON.stringify(garment.aiTags), imageKey, createdAt]);
+          [id, owner.id, garment.name, garment.category, garment.colorName, garment.colorHex, garment.season, garment.style, JSON.stringify({ ...garment.aiTags, starterGender: gender }), imageKey, createdAt]);
         created[index] = {
           id,
           name: garment.name,
