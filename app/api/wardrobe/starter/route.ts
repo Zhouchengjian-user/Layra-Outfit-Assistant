@@ -12,6 +12,20 @@ import sharp from "sharp";
 
 type ItemRow = { id: string; imageKey: string; aiTags: string };
 
+/** 删除某个性别（或全部）的预设单品，保留用户自己上传的衣物。 */
+async function removeStarterItems(ownerId: string, gender: "女" | "男" | "all") {
+  const marker = gender === "all" ? "%starterGender%" : `%"starterGender":"${gender}"%`;
+  const rows = await dbAll<ItemRow>(
+    "SELECT id, image_key AS imageKey FROM wardrobe_items WHERE owner_id = ? AND ai_tags LIKE ?",
+    [ownerId, marker],
+  );
+  for (const row of rows) {
+    await dbRun("DELETE FROM wardrobe_items WHERE id = ? AND owner_id = ?", [row.id, ownerId]);
+    if (row.imageKey) await storageDelete(row.imageKey).catch(() => undefined);
+  }
+  return rows.length;
+}
+
 async function fetchImageUrl(url: string, timeoutMs = 60_000): Promise<{ buffer: ArrayBuffer; contentType: string }> {
   const response = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
   if (!response.ok) throw new Error("预设商品图下载失败");
@@ -77,6 +91,22 @@ async function cachedProductImage(garmentId: string, drawPrompt: string) {
   throw lastError instanceof Error ? lastError : new Error("预设商品图生成失败");
 }
 
+export async function DELETE(request: Request) {
+  const owner = getOwner(request);
+  try {
+    await ensureSchema();
+    const url = new URL(request.url);
+    const gender = url.searchParams.get("gender");
+    if (gender !== "男" && gender !== "女" && gender !== "all") {
+      return ownerJson({ error: "缺少性别参数" }, owner, 400);
+    }
+    const removed = await removeStarterItems(owner.id, gender);
+    return ownerJson({ removed, ok: true }, owner);
+  } catch (error) {
+    return ownerJson({ error: error instanceof Error ? error.message : "移除预设衣柜失败" }, owner, 500);
+  }
+}
+
 export async function POST(request: Request) {
   const owner = getOwner(request);
   try {
@@ -91,18 +121,9 @@ export async function POST(request: Request) {
       return ownerJson({ saved: existing.length, reused: true, gender, starterGender: gender }, owner);
     }
 
-    // 若已启用其他性别的预设衣柜，先整体移除（含图片），再切换
+    // 若已启用其他性别的预设衣柜，先整体移除（含图片），再切换；用户上传的衣物不受影响
     const otherGender = gender === "男" ? "女" : "男";
-    const otherRows = await dbAll<ItemRow>(
-      "SELECT id, image_key AS imageKey, ai_tags AS aiTags FROM wardrobe_items WHERE owner_id = ? AND ai_tags LIKE ?",
-      [owner.id, `%"starterGender":"${otherGender}"%`],
-    );
-    if (otherRows.length) {
-      for (const row of otherRows) {
-        await dbRun("DELETE FROM wardrobe_items WHERE id = ? AND owner_id = ?", [row.id, owner.id]);
-        if (row.imageKey) await storageDelete(row.imageKey).catch(() => undefined);
-      }
-    }
+    await removeStarterItems(owner.id, otherGender);
 
     const created = new Array<{ id: string; name: string; category: string; colorName: string; colorHex: string; season: string; style: string; aiTags: Record<string, unknown> }>(items.length);
     const errors = new Array<string | null>(items.length).fill(null);
