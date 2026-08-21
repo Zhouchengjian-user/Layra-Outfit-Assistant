@@ -93,6 +93,23 @@ TOS_BUCKET=<bucket-name>
 - 轮换 `OWNER_ID_SECRET` 或替换已使用的邀请码会改变用户 ID，使原衣柜看起来“消失”。上线后不要随意轮换；确需轮换时先做数据迁移。
 - 生产缺少或误配任一认证变量时，接口会拒绝服务，不能降级成匿名访问。
 
+## 既有本地数据迁移
+
+上线前若 `.data/yida.sqlite` 已有旧匿名用户数据，禁止直接覆盖源库或把整个 `.data` 打进镜像。先确认要保留的旧 owner，再把它映射到邀请码对应的稳定 `usr-...` 用户 ID：
+
+```bash
+npm run migration:prepare -- \
+  --source-db .data/yida.sqlite \
+  --objects-dir .data/objects \
+  --source-owner <确认保留的旧 owner> \
+  --target-owner <邀请码对应的 usr-... ID> \
+  --output /tmp/yida-production-migration.sqlite
+```
+
+只有在已经人工确认“衣柜最多的 owner 就是主数据”时，才可用 `--source largest` 代替 `--source-owner`。脚本只读源库，拒绝覆盖现有输出，校验 SQLite、收藏引用与所有图片，并只输出记录数和字节数；生成文件权限为 `0600`。
+
+将生成文件作为单个私有对象上传到 `db_backup/yida.sqlite` 后，新实例会先恢复数据库，再用当前请求的 veFaaS Role STS 幂等写入内嵌图片。任一图片失败会保留迁移载荷供下次重试；全部成功才删除临时表并写回正常轻量快照。验证 TOS 图片、固定快照和公网读取均正常后，立即删除本地 `/tmp` 迁移文件，绝不能提交到 Git 或放进镜像。
+
 ## TOS 与 veFaaS Role
 
 生产函数通过绑定 veFaaS IAM Role 访问 TOS。Role 只授予目标 Bucket 及业务图片、`db_backup/yida.sqlite` 所需的最小对象读写权限。

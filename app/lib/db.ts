@@ -9,6 +9,7 @@ import {
   uploadSqliteSnapshot,
 } from "./sqlite-persistence";
 import { logServerEvent } from "./observability";
+import { extractEmbeddedMigrationObjects } from "./embedded-migration";
 import {
   getStorageRequestContext,
   type StorageRequestContext,
@@ -97,10 +98,19 @@ async function createSqlite(): Promise<DatabaseSync> {
   }
 
   const database = new DatabaseSync(databasePath);
-  database.exec("PRAGMA journal_mode = WAL;");
-  database.exec("PRAGMA busy_timeout = 5000;");
-  startPeriodicSqliteBackup();
-  return database;
+  try {
+    database.exec("PRAGMA journal_mode = WAL;");
+    database.exec("PRAGMA busy_timeout = 5000;");
+    const migrated = sqliteCloudBackupEnabled()
+      ? await extractEmbeddedMigrationObjects(database, storagePut)
+      : false;
+    startPeriodicSqliteBackup();
+    if (migrated) markSqliteDirty();
+    return database;
+  } catch (error) {
+    database.close();
+    throw error;
+  }
 }
 
 function getSqlite(): Promise<DatabaseSync> {

@@ -12,7 +12,8 @@
     "test": "node --test tests/*.test.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "db:init": "node scripts/init-db.mjs"
+    "db:init": "node scripts/init-db.mjs",
+    "migration:prepare": "node scripts/prepare-production-migration.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "3.1115.0",
