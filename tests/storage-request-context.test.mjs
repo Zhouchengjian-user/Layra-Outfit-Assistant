@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 
+import { createS3Client } from "../app/lib/s3-client.ts";
 import {
   captureStorageRequestContext,
   getStorageRequestContext,
@@ -35,6 +36,25 @@ test("完整 STS 三元组只在当前异步调用链中可见", async () => {
 
   assert.equal(result, 42);
   assert.equal(getStorageRequestContext(), null);
+});
+
+test("冻结的请求凭据会以可写副本交给 AWS SDK", async () => {
+  const context = captureStorageRequestContext(vefaasHeaders("frozen"));
+  assert.ok(context);
+  assert.ok(Object.isFrozen(context));
+
+  const client = createS3Client(context);
+  try {
+    const resolved = await client.config.credentials();
+    assert.notEqual(resolved, context);
+    assert.equal(resolved.accessKeyId, context.accessKeyId);
+    assert.equal(resolved.secretAccessKey, context.secretAccessKey);
+    assert.equal(resolved.sessionToken, context.sessionToken);
+    assert.equal(resolved.$source?.CREDENTIALS_CODE, "e");
+    assert.equal(Object.hasOwn(context, "$source"), false);
+  } finally {
+    client.destroy();
+  }
 });
 
 test("部分 STS 请求头会报错，不会静默回退长期凭据", () => {

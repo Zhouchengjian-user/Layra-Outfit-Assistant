@@ -7,7 +7,8 @@ import {
 } from "@aws-sdk/client-s3";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { getStorageRequestContext, type StorageRequestContext } from "./storage-request-context";
+import { getStorageRequestContext } from "./storage-request-context";
+import { createS3Client, type S3Credentials } from "./s3-client";
 
 export type StoredObject = { body: Uint8Array<ArrayBuffer>; contentType: string };
 
@@ -34,20 +35,6 @@ function bucketName(): string {
   const bucket = process.env.TOS_BUCKET;
   if (!bucket) throw new Error("服务端缺少 TOS_BUCKET 配置");
   return bucket;
-}
-
-type S3Credentials = Pick<StorageRequestContext, "accessKeyId" | "secretAccessKey"> &
-  Partial<Pick<StorageRequestContext, "sessionToken">>;
-
-function createS3Client(credentials: S3Credentials): S3Client {
-  return new S3Client({
-    region: process.env.TOS_REGION || "cn-beijing",
-    endpoint: process.env.TOS_ENDPOINT || undefined,
-    credentials,
-    // 火山引擎 TOS 的 S3 兼容接口仅支持 VirtualHostStyle：
-    // https://{bucket}.tos-s3-{region}.volces.com/{key}
-    forcePathStyle: false,
-  });
 }
 
 function envS3Credentials(): S3Credentials {
