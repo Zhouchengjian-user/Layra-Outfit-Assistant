@@ -392,6 +392,13 @@ export default function Home() {
     const recs = (entry.result as { recommendations?: OutfitRecommendation[] } | null)?.recommendations;
     if (recs && recs.length) {
       setRecommendations(recs);
+      // 回放旧推荐：清掉当前试穿缓存，避免与旧图串
+      tryOnCacheRef.current.forEach(url => URL.revokeObjectURL(url));
+      tryOnCacheRef.current.clear();
+      setTryOnUrl("");
+      setShowTryOn(false);
+      window.sessionStorage.removeItem(lastVisualizationTaskKey);
+      window.sessionStorage.removeItem(lastVisualizationLookKey);
       setScene(entry.scene as Scene);
       setShowResults(true);
       setSelectedRecommendationId(null);
@@ -497,6 +504,13 @@ export default function Home() {
 
   const revealRecommendations = useCallback((payload: RecommendationPayload) => {
     if (!payload.recommendations?.length) throw new Error("本次没有生成可用搭配，请稍后重试");
+    // 新一批推荐就绪：清掉上一轮的试穿图缓存与状态，避免串图
+    tryOnCacheRef.current.forEach(url => URL.revokeObjectURL(url));
+    tryOnCacheRef.current.clear();
+    setTryOnUrl("");
+    setShowTryOn(false);
+    window.sessionStorage.removeItem(lastVisualizationTaskKey);
+    window.sessionStorage.removeItem(lastVisualizationLookKey);
     setRecommendations(payload.recommendations);
     setOutfitIntent(payload.intent || null);
     setSelectedRecommendationId(null);
@@ -971,8 +985,16 @@ export default function Home() {
       if (rec.id !== selectedRecommendationId) return rec;
       const items = [...rec.items];
       const index = items.findIndex(item => item.category === category);
-      if (index >= 0) items[index] = mapped;
-      else items.push(mapped);
+      if (index >= 0) {
+        items[index] = mapped;
+      } else if (items.length < 6) {
+        items.push(mapped);
+      } else {
+        // 已满 6 件时替换同类配饰或最后一件，避免单品无限累积导致试穿混图
+        const accessoryIndex = items.findIndex(item => ["配饰", "帽子"].includes(item.category));
+        if (accessoryIndex >= 0) items[accessoryIndex] = mapped;
+        else items[items.length - 1] = mapped;
+      }
       return { ...rec, items, itemIds: items.map(item => item.id) };
     }));
     setShowSwapModal(false);

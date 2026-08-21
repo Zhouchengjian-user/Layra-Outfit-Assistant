@@ -7,7 +7,8 @@ export function getOwner(request: Request): Owner {
 
 export function withOwnerCookie(response: Response, owner: Owner) {
   if (owner.isNew) {
-    response.headers.append("Set-Cookie", `yida_owner=${owner.id}; Path=/; Max-Age=31536000; SameSite=Lax; HttpOnly; Secure`);
+    // 不设 Secure / 不写死 domain：让本地 http、隧道 https、正式部署都能写入同一 cookie
+    response.headers.append("Set-Cookie", `yida_owner=${owner.id}; Path=/; Max-Age=31536000; SameSite=Lax; HttpOnly`);
   }
   return response;
 }

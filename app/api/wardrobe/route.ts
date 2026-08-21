@@ -16,7 +16,7 @@ function getOwner(request: Request): Owner {
 }
 
 function withOwnerCookie(response: Response, owner: Owner) {
-  if (owner.isNew) response.headers.append("Set-Cookie", `yida_owner=${owner.id}; Path=/; Max-Age=31536000; SameSite=Lax; HttpOnly; Secure`);
+  if (owner.isNew) response.headers.append("Set-Cookie", `yida_owner=${owner.id}; Path=/; Max-Age=31536000; SameSite=Lax; HttpOnly`);
   return response;
 }
 

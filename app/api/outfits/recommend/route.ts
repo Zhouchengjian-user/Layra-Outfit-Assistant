@@ -72,12 +72,12 @@ function candidateForModel(candidate: OutfitCandidate) {
 function recommendationFromCandidate(
   candidate: OutfitCandidate,
   look: Record<string, unknown> | undefined,
-  index: number,
   items: WardrobeRow[],
 ): Recommendation {
   const readableNames = candidate.items.map(item => item.name).join("、");
   return {
-    id: `look-${index + 1}`,
+    // 每次生成唯一 id：避免“换一批”后与上一轮 look-1/2/3 同名，导致试穿缓存串图
+    id: `look-${crypto.randomUUID()}`,
     title: sanitizeDisplayText(look?.title, items, candidate.title).slice(0, 24),
     reason: sanitizeDisplayText(
       look?.reason,
@@ -119,7 +119,7 @@ function normalizeResult(value: Record<string, unknown>, candidates: OutfitCandi
   }
   return {
     intent,
-    recommendations: chosen.slice(0, 3).map((selection, index) => recommendationFromCandidate(selection.candidate, selection.look, index, items)),
+    recommendations: chosen.slice(0, 3).map(selection => recommendationFromCandidate(selection.candidate, selection.look, items)),
   };
 }
 
