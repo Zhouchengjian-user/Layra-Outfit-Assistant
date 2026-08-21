@@ -33,6 +33,9 @@ COPY --from=builder /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 
+# 本地 SQLite 模式需要可写目录（线上 MySQL 模式下不使用，但保留兜底）
+RUN mkdir -p /app/.data && chown -R nextjs:nodejs /app/.data
+
 USER nextjs
 
 EXPOSE 8000
