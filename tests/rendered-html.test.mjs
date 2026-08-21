@@ -47,14 +47,43 @@ test("迁移到火山引擎：移除 Cloudflare 依赖，接入 MySQL 与 TOS", 
   assert.ok(!json.devDependencies?.drizzle, "应移除 drizzle");
 });
 
+test("生产可观测性：Sentry 仅在配置 DSN 后启用且默认保护隐私", async () => {
+  const [instrumentation, clientConfig, serverConfig, edgeConfig, globalError, options, nextConfig, env, pkg] = await Promise.all([
+    read("../instrumentation.ts"),
+    read("../instrumentation-client.ts"),
+    read("../sentry.server.config.ts"),
+    read("../sentry.edge.config.ts"),
+    read("../app/global-error.tsx"),
+    read("../sentry.options.ts"),
+    read("../next.config.ts"),
+    read("../.env.example"),
+    read("../package.json"),
+  ]);
+
+  assert.match(instrumentation, /process\.env\.SENTRY_DSN\?\.trim\(\)/);
+  assert.match(instrumentation, /captureRequestError/);
+  assert.match(clientConfig, /if \(dsn\) Sentry\.init/);
+  assert.match(serverConfig, /if \(dsn\) Sentry\.init/);
+  assert.match(edgeConfig, /if \(dsn\) Sentry\.init/);
+  assert.match(globalError, /NEXT_PUBLIC_SENTRY_DSN/);
+  assert.match(globalError, /Sentry\.captureException\(error\)/);
+  assert.match(options, /sendDefaultPii: false/);
+  assert.match(options, /tracesSampleRate: 0\.01/);
+  assert.match(options, /httpBodies: \[\]/);
+  assert.match(options, /genAI: \{ inputs: false, outputs: false \}/);
+  assert.match(nextConfig, /sourcemaps: \{ disable: true \}/);
+  assert.match(nextConfig, /telemetry: false/);
+  assert.match(env, /^SENTRY_DSN=$/m);
+  assert.equal(JSON.parse(pkg).dependencies["@sentry/nextjs"], "10.70.0");
+});
+
 test("业务逻辑保留：第一阶段衣柜工作流", async () => {
-  const [page, processor, tagger, api, analyzer, cutout, productizer] = await Promise.all([
+  const [page, processor, tagger, api, analyzer, productizer] = await Promise.all([
     read("../app/page.tsx"),
     read("../app/lib/garment-image.ts"),
     read("../app/lib/garment-tags.ts"),
     read("../app/api/wardrobe/route.ts"),
     read("../app/api/wardrobe/analyze/route.ts"),
-    read("../app/api/wardrobe/cutout/route.ts"),
     read("../app/api/wardrobe/productize/route.ts"),
   ]);
 
@@ -78,8 +107,6 @@ test("业务逻辑保留：第一阶段衣柜工作流", async () => {
   assert.match(analyzer, /overlapOfSmaller/);
   assert.match(analyzer, /centerYDistance/);
   assert.match(analyzer, /腰带/);
-  assert.match(cutout, /SegmentCloth/);
-  assert.match(cutout, /SegmentCommodity/);
   assert.match(productizer, /qwen-image-2\.0/);
   assert.match(productizer, /validateProductImage/);
   assert.match(productizer, /same_item/);

@@ -1,4 +1,7 @@
 import { requireServerEnv, getServerEnv } from "../../../lib/server-env";
+import { requireSession, responseForAuthError } from "../../../lib/auth";
+import { apiErrorResponse } from "../../../lib/observability";
+import { withProtectedApiRequest } from "../../../lib/protected-route";
 
 type Detection = {
   id: number;
@@ -301,8 +304,9 @@ function addMissingFocusedItems(items: Detection[], focusedItems: Detection[]) {
   return deduplicateShoes(merged);
 }
 
-export async function POST(request: Request) {
+async function handlePOST(request: Request) {
   try {
+    requireSession(request);
     const form = await request.formData();
     const image = form.get("image");
     if (!(image instanceof File) || !image.type.startsWith("image/")) {
@@ -356,6 +360,12 @@ bbox_2d 使用0到1000归一化坐标。为每件真实单品增加 is_real_item
     if (!detections.length) throw new Error("没有识别到可入柜的单品");
     return Response.json({ detections });
   } catch (error) {
-    return Response.json({ error: error instanceof Error ? error.message : "单品识别失败" }, { status: 500 });
+    const authResponse = responseForAuthError(error);
+    if (authResponse) return authResponse;
+    return apiErrorResponse(request, error, "单品识别失败");
   }
+}
+
+export function POST(request: Request) {
+  return withProtectedApiRequest(request, handlePOST, "单品识别失败");
 }

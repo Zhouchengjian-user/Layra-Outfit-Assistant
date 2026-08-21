@@ -1,9 +1,11 @@
 import { dbAll, dbRun, ensureSchema } from "../../../lib/db";
 import { getOwner, ownerJson } from "../../../lib/owner";
+import { apiErrorResponse } from "../../../lib/observability";
+import { withProtectedApiRequest } from "../../../lib/protected-route";
 
 type HistoryRow = { id: string; scene: string; prompt: string; resultJson: string; createdAt: number };
 
-export async function GET(request: Request) {
+async function handleGET(request: Request) {
   const owner = getOwner(request);
   try {
     await ensureSchema();
@@ -22,11 +24,11 @@ export async function GET(request: Request) {
     });
     return ownerJson({ history }, owner);
   } catch (error) {
-    return ownerJson({ error: error instanceof Error ? error.message : "历史加载失败" }, owner, 500);
+    return apiErrorResponse(request, error, "历史加载失败");
   }
 }
 
-export async function POST(request: Request) {
+async function handlePOST(request: Request) {
   const owner = getOwner(request);
   try {
     await ensureSchema();
@@ -41,6 +43,14 @@ export async function POST(request: Request) {
     );
     return ownerJson({ ok: true, id }, owner, 201);
   } catch (error) {
-    return ownerJson({ error: error instanceof Error ? error.message : "保存失败" }, owner, 500);
+    return apiErrorResponse(request, error, "保存失败");
   }
+}
+
+export function GET(request: Request) {
+  return withProtectedApiRequest(request, handleGET, "历史加载失败");
+}
+
+export function POST(request: Request) {
+  return withProtectedApiRequest(request, handlePOST, "保存失败");
 }

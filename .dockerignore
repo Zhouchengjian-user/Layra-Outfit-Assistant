@@ -5,9 +5,14 @@ node_modules
 dist
 build
 .openai
+.vefaas
+.venv
 work
 outputs
 .data
+data
+__pycache__
+.pytest_cache
 
 .env
 .env.local

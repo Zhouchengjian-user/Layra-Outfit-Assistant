@@ -1,8 +1,10 @@
 import { getOwner, ownerJson, withOwnerCookie } from "../../lib/owner";
 import { dbFirst, dbRun, ensureSchema } from "../../lib/db";
 import { storageDelete, storageGet, storagePut } from "../../lib/storage";
+import { apiErrorResponse } from "../../lib/observability";
+import { withProtectedApiRequest } from "../../lib/protected-route";
 
-export async function GET(request: Request) {
+async function handleGET(request: Request) {
   const owner = getOwner(request);
   try {
     await ensureSchema();
@@ -17,11 +19,11 @@ export async function GET(request: Request) {
     }
     return ownerJson({ profile: { quality: row.quality, createdAt: row.createdAt, updatedAt: row.updatedAt, imageUrl: `/api/model-profile?image=1&v=${row.updatedAt}` } }, owner);
   } catch (error) {
-    return ownerJson({ error: error instanceof Error ? error.message : "个人模特加载失败" }, owner, 500);
+    return apiErrorResponse(request, error, "个人模特加载失败");
   }
 }
 
-export async function POST(request: Request) {
+async function handlePOST(request: Request) {
   const owner = getOwner(request);
   try {
     await ensureSchema();
@@ -45,11 +47,11 @@ export async function POST(request: Request) {
     if (old?.imageKey && old.imageKey !== imageKey) await storageDelete(old.imageKey);
     return ownerJson({ profile: { quality: "ready", createdAt: old?.createdAt ?? now, updatedAt: now, imageUrl: `/api/model-profile?image=1&v=${now}` } }, owner, 201);
   } catch (error) {
-    return ownerJson({ error: error instanceof Error ? error.message : "全身照保存失败" }, owner, 500);
+    return apiErrorResponse(request, error, "全身照保存失败");
   }
 }
 
-export async function DELETE(request: Request) {
+async function handleDELETE(request: Request) {
   const owner = getOwner(request);
   try {
     await ensureSchema();
@@ -60,6 +62,18 @@ export async function DELETE(request: Request) {
     }
     return ownerJson({ ok: true }, owner);
   } catch (error) {
-    return ownerJson({ error: error instanceof Error ? error.message : "删除失败" }, owner, 500);
+    return apiErrorResponse(request, error, "删除失败");
   }
+}
+
+export function GET(request: Request) {
+  return withProtectedApiRequest(request, handleGET, "个人模特加载失败");
+}
+
+export function POST(request: Request) {
+  return withProtectedApiRequest(request, handlePOST, "全身照保存失败");
+}
+
+export function DELETE(request: Request) {
+  return withProtectedApiRequest(request, handleDELETE, "删除失败");
 }

@@ -36,6 +36,9 @@ async function errorFromResponse(response: Response, fallback: string) {
 
 export async function requestResponse(input: RequestInfo | URL, options: RequestOptions = {}) {
   const response = await fetchWithTimeout(input, options);
+  if (response.status === 401 && !String(input).startsWith("/api/auth/")) {
+    window.dispatchEvent(new Event("yida:auth-required"));
+  }
   if (!response.ok) throw await errorFromResponse(response, "请求失败，请稍后重试");
   return response;
 }

@@ -1,10 +1,12 @@
 import { dbAll, dbRun, ensureSchema } from "../../../lib/db";
 import { getOwner, ownerJson } from "../../../lib/owner";
+import { apiErrorResponse } from "../../../lib/observability";
+import { withProtectedApiRequest } from "../../../lib/protected-route";
 
 type SavedRow = { id: string; title: string; scene: string; itemIds: string; createdAt: number };
 type ItemDetail = { id: string; name: string; category: string; colorName: string; imageUrl: string };
 
-export async function GET(request: Request) {
+async function handleGET(request: Request) {
   const owner = getOwner(request);
   try {
     await ensureSchema();
@@ -41,11 +43,11 @@ export async function GET(request: Request) {
     }));
     return ownerJson({ saved: result }, owner);
   } catch (error) {
-    return ownerJson({ error: error instanceof Error ? error.message : "收藏列表加载失败" }, owner, 500);
+    return apiErrorResponse(request, error, "收藏列表加载失败");
   }
 }
 
-export async function POST(request: Request) {
+async function handlePOST(request: Request) {
   const owner = getOwner(request);
   try {
     await ensureSchema();
@@ -53,6 +55,14 @@ export async function POST(request: Request) {
     const rawIds = Array.isArray(body.itemIds) ? body.itemIds.map(String) : [];
     const itemIds = [...new Set(rawIds)].slice(0, 8);
     if (itemIds.length < 2) return ownerJson({ error: "至少包含 2 件单品" }, owner, 400);
+    const placeholders = itemIds.map(() => "?").join(",");
+    const ownedItems = await dbAll<{ id: string }>(
+      `SELECT id FROM wardrobe_items WHERE owner_id = ? AND id IN (${placeholders})`,
+      [owner.id, ...itemIds],
+    );
+    if (ownedItems.length !== itemIds.length) {
+      return ownerJson({ error: "部分单品已不在你的衣柜，请重新选择" }, owner, 409);
+    }
     const id = crypto.randomUUID();
     const title = String(body.title || "我的搭配").trim().slice(0, 30);
     const scene = String(body.scene || "休闲").trim().slice(0, 20);
@@ -63,11 +73,11 @@ export async function POST(request: Request) {
     );
     return ownerJson({ saved: { id, title, scene, itemIds, createdAt } }, owner, 201);
   } catch (error) {
-    return ownerJson({ error: error instanceof Error ? error.message : "收藏失败" }, owner, 500);
+    return apiErrorResponse(request, error, "收藏失败");
   }
 }
 
-export async function DELETE(request: Request) {
+async function handleDELETE(request: Request) {
   const owner = getOwner(request);
   try {
     await ensureSchema();
@@ -76,6 +86,18 @@ export async function DELETE(request: Request) {
     await dbRun("DELETE FROM saved_outfits WHERE id = ? AND owner_id = ?", [id, owner.id]);
     return ownerJson({ ok: true }, owner);
   } catch (error) {
-    return ownerJson({ error: error instanceof Error ? error.message : "删除失败" }, owner, 500);
+    return apiErrorResponse(request, error, "删除失败");
   }
+}
+
+export function GET(request: Request) {
+  return withProtectedApiRequest(request, handleGET, "收藏列表加载失败");
+}
+
+export function POST(request: Request) {
+  return withProtectedApiRequest(request, handlePOST, "收藏失败");
+}
+
+export function DELETE(request: Request) {
+  return withProtectedApiRequest(request, handleDELETE, "删除失败");
 }

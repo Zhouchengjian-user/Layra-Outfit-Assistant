@@ -1,5 +1,7 @@
 import { dbFirst, dbRun, ensureSchema } from "../../lib/db";
 import { getOwner, ownerJson } from "../../lib/owner";
+import { apiErrorResponse } from "../../lib/observability";
+import { withProtectedApiRequest } from "../../lib/protected-route";
 
 const DEFAULTS = { nickname: "阿禾", gender: "女", height: "168", weight: "55", bodyType: "直筒型" };
 
@@ -30,7 +32,7 @@ function normalizeProfile(row: ProfileRow | null) {
   };
 }
 
-export async function GET(request: Request) {
+async function handleGET(request: Request) {
   const owner = getOwner(request);
   try {
     await ensureSchema();
@@ -40,11 +42,11 @@ export async function GET(request: Request) {
     );
     return ownerJson({ profile: normalizeProfile(row) }, owner);
   } catch (error) {
-    return ownerJson({ error: error instanceof Error ? error.message : "个人资料加载失败" }, owner, 500);
+    return apiErrorResponse(request, error, "个人资料加载失败");
   }
 }
 
-export async function POST(request: Request) {
+async function handlePOST(request: Request) {
   const owner = getOwner(request);
   try {
     await ensureSchema();
@@ -78,6 +80,14 @@ export async function POST(request: Request) {
     }
     return ownerJson({ profile: { nickname, gender, height, weight, bodyType, stylePrefs } }, owner);
   } catch (error) {
-    return ownerJson({ error: error instanceof Error ? error.message : "个人资料保存失败" }, owner, 500);
+    return apiErrorResponse(request, error, "个人资料保存失败");
   }
+}
+
+export function GET(request: Request) {
+  return withProtectedApiRequest(request, handleGET, "个人资料加载失败");
+}
+
+export function POST(request: Request) {
+  return withProtectedApiRequest(request, handlePOST, "个人资料保存失败");
 }

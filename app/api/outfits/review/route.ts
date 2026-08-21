@@ -3,6 +3,8 @@ import { getOwner, ownerJson } from "../../../lib/owner";
 import { getServerEnv, requireServerEnv } from "../../../lib/server-env";
 import { normalizeGarmentAITags } from "../../../lib/garment-tags";
 import { reviewOutfit, type WardrobeMatchItem } from "../../../lib/outfit-engine";
+import { apiErrorResponse } from "../../../lib/observability";
+import { withProtectedApiRequest } from "../../../lib/protected-route";
 
 type WardrobeRow = {
   id: string;
@@ -53,7 +55,7 @@ async function aiSuggestion(items: WardrobeMatchItem[], breakdown: Record<string
   }
 }
 
-export async function POST(request: Request) {
+async function handlePOST(request: Request) {
   const owner = getOwner(request);
   try {
     const body = await request.json() as {
@@ -109,6 +111,10 @@ export async function POST(request: Request) {
       })),
     }, owner);
   } catch (error) {
-    return ownerJson({ error: error instanceof Error ? error.message : "搭配点评失败" }, owner, 500);
+    return apiErrorResponse(request, error, "搭配点评失败");
   }
+}
+
+export function POST(request: Request) {
+  return withProtectedApiRequest(request, handlePOST, "搭配点评失败");
 }

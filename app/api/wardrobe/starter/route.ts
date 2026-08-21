@@ -3,6 +3,8 @@ import { getOwner, ownerJson } from "../../../lib/owner";
 import { dbAll, dbRun, ensureSchema } from "../../../lib/db";
 import { storageDelete, storageGet, storagePut } from "../../../lib/storage";
 import { starterGarmentsFor } from "../../../lib/starter-wardrobe";
+import { apiErrorResponse } from "../../../lib/observability";
+import { withProtectedApiRequest } from "../../../lib/protected-route";
 import sharp from "sharp";
 
 /**
@@ -91,7 +93,7 @@ async function cachedProductImage(garmentId: string, drawPrompt: string) {
   throw lastError instanceof Error ? lastError : new Error("预设商品图生成失败");
 }
 
-export async function DELETE(request: Request) {
+async function handleDELETE(request: Request) {
   const owner = getOwner(request);
   try {
     await ensureSchema();
@@ -103,11 +105,11 @@ export async function DELETE(request: Request) {
     const removed = await removeStarterItems(owner.id, gender);
     return ownerJson({ removed, ok: true }, owner);
   } catch (error) {
-    return ownerJson({ error: error instanceof Error ? error.message : "移除预设衣柜失败" }, owner, 500);
+    return apiErrorResponse(request, error, "移除预设衣柜失败");
   }
 }
 
-export async function POST(request: Request) {
+async function handlePOST(request: Request) {
   const owner = getOwner(request);
   try {
     await ensureSchema();
@@ -149,13 +151,14 @@ export async function POST(request: Request) {
           aiTags: garment.aiTags,
         };
       } catch (error) {
-        errors[index] = error instanceof Error ? error.message : "生成失败";
+        void error;
+        errors[index] = "生成失败";
       }
     }
 
     const completed = created.filter(Boolean);
     if (!completed.length) {
-      return ownerJson({ error: errors.find(Boolean) || "预设衣柜暂时没有准备好，请稍后重试" }, owner, 500);
+      return ownerJson({ error: "预设衣柜暂时没有准备好，请稍后重试" }, owner, 500);
     }
     const failedCount = errors.filter(Boolean).length;
     return ownerJson({
@@ -166,6 +169,14 @@ export async function POST(request: Request) {
       hint: failedCount ? `${completed.length} 件已入柜，${failedCount} 件稍后可重试` : undefined,
     }, owner, failedCount ? 207 : 201);
   } catch (error) {
-    return ownerJson({ error: error instanceof Error ? error.message : "预设衣柜生成失败" }, owner, 500);
+    return apiErrorResponse(request, error, "预设衣柜生成失败");
   }
+}
+
+export function DELETE(request: Request) {
+  return withProtectedApiRequest(request, handleDELETE, "移除预设衣柜失败");
+}
+
+export function POST(request: Request) {
+  return withProtectedApiRequest(request, handlePOST, "预设衣柜生成失败");
 }

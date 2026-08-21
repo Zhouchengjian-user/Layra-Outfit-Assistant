@@ -19,6 +19,7 @@ import {
   type StyleIntensity,
   type TaskPhase,
 } from "./lib/outfit-client";
+import { AuthGate, useAuth } from "./components/auth-gate";
 import { ModalFrame } from "./components/modal-frame";
 
 type Tab = "home" | "wardrobe" | "create" | "inspiration" | "saved" | "profile";
@@ -129,7 +130,8 @@ function ModelProfileStrip({ profile, uploading, onUpload }: { profile: ModelPro
   </section>;
 }
 
-export default function Home() {
+function YidaApp() {
+  const { logout } = useAuth();
   const [tab, setTab] = useState<Tab>("home");
   const [promptIndex, setPromptIndex] = useState(0);
   const [prompt, setPrompt] = useState("");
@@ -1142,7 +1144,7 @@ export default function Home() {
           <section className="taste-card"><span className="micro-label">STYLE DNA</span><h3>你的风格偏好</h3><p className="taste-help">点选喜欢的风格，随时可以调整</p><div className="preference-chips">{styleOptions.map(item => <button key={item} className={stylePrefs.includes(item) ? "active" : ""} onClick={() => toggleStyle(item)}>{stylePrefs.includes(item) ? "✓ " : "+ "}{item}</button>)}</div></section>
           <div className="profile-feature-grid"><section className="usage-card"><div><span>今日生成额度</span><b>{generationsLeft} / 5</b></div><div className="usage-track"><i style={{ width: `${generationsLeft * 20}%` }} /></div><small>每日 00:00 自动恢复</small></section><section className="points-card"><span>易搭积分</span><b>260</b><small>上传衣服和完善衣柜可获得积分</small><button onClick={() => notify("积分商城将在后续版本开放")}>查看权益 →</button></section></div>
           <section className="profile-section"><div className="section-heading"><div><span className="micro-label">HISTORY · 30 DAYS</span><h3>最近记录</h3></div><Icon name="history" /></div><div className="history-list">{history.map(item => <button key={item.id} onClick={() => replayHistory(item)}><span>{formatHistoryDate(item.createdAt)}</span><b>{item.scene}</b><p>{item.prompt}</p><i>›</i></button>)}</div></section>
-          <div className="settings-list"><button onClick={() => setShowWeather(true)}>常驻城市 <span>{city} ›</span></button><button onClick={() => notify("手机号登录将在正式版开放")}>手机号与微信 <span>未绑定 ›</span></button><button onClick={() => notify("照片仅用于生成你的专属效果图")}>照片与隐私 <span>已授权 ›</span></button></div>
+          <div className="settings-list"><button onClick={() => setShowWeather(true)}>常驻城市 <span>{city} ›</span></button><button onClick={() => notify("当前使用邀请码登录")}>登录方式 <span>邀请码 ›</span></button><button onClick={() => notify("照片仅用于生成你的专属效果图")}>照片与隐私 <span>已授权 ›</span></button><button className="logout-setting" onClick={() => void logout()}>退出登录 <span>→</span></button></div>
         </div>}
       </section>
 
@@ -1167,6 +1169,10 @@ export default function Home() {
       {toast && <div className="toast"><Icon name="check" /> {toast}</div>}
     </main>
   );
+}
+
+export default function Home() {
+  return <AuthGate><YidaApp /></AuthGate>;
 }
 
 function Thinking({ phase }: { phase: TaskPhase }) {

@@ -1,6 +1,9 @@
 import { getServerEnv, requireServerEnv } from "../../../lib/server-env";
+import { requireSession, responseForAuthError } from "../../../lib/auth";
 import { encodeGarmentTags, normalizeGarmentAITags, type GarmentAITags } from "../../../lib/garment-tags";
 import { storageGet, storagePut } from "../../../lib/storage";
+import { apiErrorResponse } from "../../../lib/observability";
+import { withProtectedApiRequest } from "../../../lib/protected-route";
 
 type CachedProduct = { quality: "good" | "review"; tags: GarmentAITags; contentType: string };
 
@@ -147,8 +150,9 @@ async function validateProductImage(sourceImage: string, imageUrl: string, categ
   }
 }
 
-export async function POST(request: Request) {
+async function handlePOST(request: Request) {
   try {
+    requireSession(request);
     const form = await request.formData();
     const image = form.get("image");
     if (!(image instanceof File) || !image.type.startsWith("image/")) {
@@ -229,6 +233,12 @@ export async function POST(request: Request) {
     }
     return productResponse(generatedBuffer, meta, "MISS");
   } catch (error) {
-    return Response.json({ error: error instanceof Error ? error.message : "高清商品图生成失败" }, { status: 500 });
+    const authResponse = responseForAuthError(error);
+    if (authResponse) return authResponse;
+    return apiErrorResponse(request, error, "高清商品图生成失败");
   }
+}
+
+export function POST(request: Request) {
+  return withProtectedApiRequest(request, handlePOST, "高清商品图生成失败");
 }

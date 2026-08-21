@@ -19,6 +19,8 @@ import {
   type StylingIntent,
   type WardrobeMatchItem,
 } from "../../../lib/outfit-engine";
+import { apiErrorResponse } from "../../../lib/observability";
+import { withProtectedApiRequest } from "../../../lib/protected-route";
 
 type WardrobeRow = {
   id: string; name: string; category: string; colorName: string; season: string; style: string; aiTags: string;
@@ -128,7 +130,7 @@ function completedPayload(taskResult: string | null) {
   return JSON.parse(taskResult) as Record<string, unknown>;
 }
 
-export async function GET(request: Request) {
+async function handleGET(request: Request) {
   const owner = getOwner(request);
   try {
     await ensureAiTaskSchema();
@@ -136,14 +138,14 @@ export async function GET(request: Request) {
     const task = await getAiTask(owner.id, "outfit-recommendation", taskId);
     if (!task) return ownerJson({ error: "没有找到这次搭配任务" }, owner, 404);
     if (task.status === "succeeded") return ownerJson({ ...completedPayload(task.resultJson), task: taskPayload(task) }, owner);
-    if (task.status === "failed") return ownerJson({ task: taskPayload(task), error: task.errorMessage || "搭配生成失败" }, owner, 409);
+    if (task.status === "failed") return ownerJson({ task: taskPayload(task), error: "搭配生成失败，请点击重试" }, owner, 409);
     return ownerJson({ task: taskPayload(task) }, owner, 202);
   } catch (error) {
-    return ownerJson({ error: error instanceof Error ? error.message : "搭配任务查询失败" }, owner, 500);
+    return apiErrorResponse(request, error, "搭配任务查询失败");
   }
 }
 
-export async function POST(request: Request) {
+async function handlePOST(request: Request) {
   const owner = getOwner(request);
   const idempotencyKey = readIdempotencyKey(request);
   if (!idempotencyKey) return ownerJson({ error: "请刷新页面后重新提交", code: "INVALID_IDEMPOTENCY_KEY" }, owner, 400);
@@ -152,7 +154,7 @@ export async function POST(request: Request) {
     await ensureAiTaskSchema();
     const existing = await getAiTask(owner.id, "outfit-recommendation", idempotencyKey);
     if (existing?.status === "succeeded") return ownerJson({ ...completedPayload(existing.resultJson), task: taskPayload(existing) }, owner);
-    if (existing?.status === "failed") return ownerJson({ task: taskPayload(existing), error: existing.errorMessage || "上次搭配生成失败，请点击重试" }, owner, 409);
+    if (existing?.status === "failed") return ownerJson({ task: taskPayload(existing), error: "上次搭配生成失败，请点击重试" }, owner, 409);
     if (existing) return ownerJson({ task: taskPayload(existing) }, owner, 202);
     const body = await request.json() as {
       prompt?: string; scene?: string; weather?: Record<string, unknown>; profile?: Record<string, unknown>; intensity?: StyleIntensity; closet?: string;
@@ -191,7 +193,7 @@ export async function POST(request: Request) {
     taskId = started.task.id;
     if (!started.created) {
       if (started.task.status === "succeeded") return ownerJson({ ...completedPayload(started.task.resultJson), task: taskPayload(started.task) }, owner);
-      if (started.task.status === "failed") return ownerJson({ task: taskPayload(started.task), error: started.task.errorMessage || "上次搭配生成失败，请点击重试" }, owner, 409);
+      if (started.task.status === "failed") return ownerJson({ task: taskPayload(started.task), error: "上次搭配生成失败，请点击重试" }, owner, 409);
       return ownerJson({ task: taskPayload(started.task) }, owner, 202);
     }
 
@@ -241,8 +243,15 @@ export async function POST(request: Request) {
     await completeAiTask(taskId, { resultJson: JSON.stringify(resultPayload) });
     return ownerJson({ ...resultPayload, task: { id: taskId, kind: "outfit-recommendation", status: "succeeded", updatedAt: Date.now() } }, owner);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "搭配生成失败";
-    if (taskId) await failAiTask(taskId, message).catch(() => undefined);
-    return ownerJson({ error: message, task: taskId ? { id: taskId, status: "failed" } : undefined }, owner, 500);
+    if (taskId) await failAiTask(taskId).catch(() => undefined);
+    return apiErrorResponse(request, error, "搭配生成失败");
   }
+}
+
+export function GET(request: Request) {
+  return withProtectedApiRequest(request, handleGET, "搭配任务查询失败");
+}
+
+export function POST(request: Request) {
+  return withProtectedApiRequest(request, handlePOST, "搭配生成失败");
 }

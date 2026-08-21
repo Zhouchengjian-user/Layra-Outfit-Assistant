@@ -1,24 +1,15 @@
 import { normalizeGarmentAITags, type GarmentAITags } from "../../lib/garment-tags";
 import { dbAll, dbFirst, dbRun, ensureSchema } from "../../lib/db";
+import { getOwner, ownerJson, withOwnerCookie } from "../../lib/owner";
 import { storageDelete, storageGet, storagePut } from "../../lib/storage";
-
-type Owner = { id: string; isNew: boolean };
+import { apiErrorResponse } from "../../lib/observability";
+import { withProtectedApiRequest } from "../../lib/protected-route";
 
 const itemSelect = `
   SELECT id, name, category, color_name AS colorName, color_hex AS colorHex,
          season, style, status, ai_tags AS aiTags, tag_version AS tagVersion, created_at AS createdAt
   FROM wardrobe_items
 `;
-
-function getOwner(request: Request): Owner {
-  const match = request.headers.get("cookie")?.match(/(?:^|;\s*)yida_owner=([a-zA-Z0-9-]{20,80})/);
-  return match ? { id: match[1], isNew: false } : { id: crypto.randomUUID(), isNew: true };
-}
-
-function withOwnerCookie(response: Response, owner: Owner) {
-  if (owner.isNew) response.headers.append("Set-Cookie", `yida_owner=${owner.id}; Path=/; Max-Age=31536000; SameSite=Lax; HttpOnly`);
-  return response;
-}
 
 function parseTags(value: unknown, fallback: { category: string; color: string; season?: string; style?: string }) {
   if (typeof value !== "string") return normalizeGarmentAITags(value, fallback);
@@ -47,11 +38,7 @@ function presentItem(item: Record<string, unknown>) {
   return { ...item, aiTags };
 }
 
-function json(payload: unknown, owner: Owner, status = 200) {
-  return withOwnerCookie(Response.json(payload, { status }), owner);
-}
-
-export async function GET(request: Request) {
+async function handleGET(request: Request) {
   const owner = getOwner(request);
   try {
     await ensureSchema();
@@ -59,29 +46,29 @@ export async function GET(request: Request) {
     const imageId = url.searchParams.get("image");
     if (imageId) {
       const row = await dbFirst<{ imageKey: string }>("SELECT image_key AS imageKey FROM wardrobe_items WHERE id = ? AND owner_id = ?", [imageId, owner.id]);
-      if (!row) return json({ error: "衣物不存在" }, owner, 404);
+      if (!row) return ownerJson({ error: "衣物不存在" }, owner, 404);
       const object = await storageGet(row.imageKey);
-      if (!object) return json({ error: "图片不存在" }, owner, 404);
+      if (!object) return ownerJson({ error: "图片不存在" }, owner, 404);
       const headers = new Headers({ "Content-Type": object.contentType });
       headers.set("Cache-Control", "private, max-age=31536000, immutable");
       return withOwnerCookie(new Response(object.body, { headers }), owner);
     }
     const items = await dbAll(`${itemSelect} WHERE owner_id = ? ORDER BY created_at DESC LIMIT 600`, [owner.id]);
     const presented = items.map(item => ({ ...presentItem(item), imageUrl: `/api/wardrobe?image=${item.id}` }));
-    return json({ items: presented }, owner);
+    return ownerJson({ items: presented }, owner);
   } catch (error) {
-    return json({ error: error instanceof Error ? error.message : "衣柜加载失败" }, owner, 500);
+    return apiErrorResponse(request, error, "衣柜加载失败");
   }
 }
 
-export async function POST(request: Request) {
+async function handlePOST(request: Request) {
   const owner = getOwner(request);
   try {
     await ensureSchema();
     const form = await request.formData();
     const image = form.get("image");
-    if (!(image instanceof File) || !image.type.startsWith("image/")) return json({ error: "请选择衣物图片" }, owner, 400);
-    if (image.size > 12 * 1024 * 1024) return json({ error: "单张图片不能超过 12MB" }, owner, 400);
+    if (!(image instanceof File) || !image.type.startsWith("image/")) return ownerJson({ error: "请选择衣物图片" }, owner, 400);
+    if (image.size > 12 * 1024 * 1024) return ownerJson({ error: "单张图片不能超过 12MB" }, owner, 400);
     const id = crypto.randomUUID();
     const contentType = image.type === "image/jpeg" ? "image/jpeg" : "image/png";
     const extension = contentType === "image/jpeg" ? "jpg" : "png";
@@ -114,20 +101,20 @@ export async function POST(request: Request) {
       (id, owner_id, name, category, color_name, color_hex, season, style, status, ai_tags, tag_version, image_key, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [id, owner.id, item.name, item.category, item.colorName, item.colorHex, item.season, item.style, item.status, JSON.stringify(item.aiTags), item.tagVersion, imageKey, createdAt]);
-    return json({ item }, owner, 201);
+    return ownerJson({ item }, owner, 201);
   } catch (error) {
-    return json({ error: error instanceof Error ? error.message : "衣物保存失败" }, owner, 500);
+    return apiErrorResponse(request, error, "衣物保存失败");
   }
 }
 
-export async function PATCH(request: Request) {
+async function handlePATCH(request: Request) {
   const owner = getOwner(request);
   try {
     await ensureSchema();
     const body = await request.json() as Partial<{ id: string; name: string; category: string; colorName: string; colorHex: string; season: string; style: string; status: string; aiTags: GarmentAITags }>;
-    if (!body.id) return json({ error: "缺少衣物编号" }, owner, 400);
+    if (!body.id) return ownerJson({ error: "缺少衣物编号" }, owner, 400);
     const current = await dbFirst<Record<string, string | number>>(`${itemSelect} WHERE id = ? AND owner_id = ?`, [body.id, owner.id]);
-    if (!current) return json({ error: "衣物不存在" }, owner, 404);
+    if (!current) return ownerJson({ error: "衣物不存在" }, owner, 404);
     const category = String(body.category ?? current.category).trim().slice(0, 20);
     const colorName = String(body.colorName ?? current.colorName).trim().slice(0, 20);
     const season = String(body.season ?? current.season).trim().slice(0, 20);
@@ -155,24 +142,40 @@ export async function PATCH(request: Request) {
     };
     await dbRun(`UPDATE wardrobe_items SET name = ?, category = ?, color_name = ?, color_hex = ?, season = ?, style = ?, status = ?, ai_tags = ?, tag_version = ? WHERE id = ? AND owner_id = ?`,
       [item.name, item.category, item.colorName, item.colorHex, item.season, item.style, item.status, JSON.stringify(item.aiTags), item.tagVersion, body.id, owner.id]);
-    return json({ item }, owner);
+    return ownerJson({ item }, owner);
   } catch (error) {
-    return json({ error: error instanceof Error ? error.message : "衣物更新失败" }, owner, 500);
+    return apiErrorResponse(request, error, "衣物更新失败");
   }
 }
 
-export async function DELETE(request: Request) {
+async function handleDELETE(request: Request) {
   const owner = getOwner(request);
   try {
     await ensureSchema();
     const id = new URL(request.url).searchParams.get("id");
-    if (!id) return json({ error: "缺少衣物编号" }, owner, 400);
+    if (!id) return ownerJson({ error: "缺少衣物编号" }, owner, 400);
     const row = await dbFirst<{ imageKey: string }>("SELECT image_key AS imageKey FROM wardrobe_items WHERE id = ? AND owner_id = ?", [id, owner.id]);
-    if (!row) return json({ error: "衣物不存在" }, owner, 404);
+    if (!row) return ownerJson({ error: "衣物不存在" }, owner, 404);
     await dbRun("DELETE FROM wardrobe_items WHERE id = ? AND owner_id = ?", [id, owner.id]);
     await storageDelete(row.imageKey);
-    return json({ ok: true }, owner);
+    return ownerJson({ ok: true }, owner);
   } catch (error) {
-    return json({ error: error instanceof Error ? error.message : "衣物删除失败" }, owner, 500);
+    return apiErrorResponse(request, error, "衣物删除失败");
   }
+}
+
+export function GET(request: Request) {
+  return withProtectedApiRequest(request, handleGET, "衣柜加载失败");
+}
+
+export function POST(request: Request) {
+  return withProtectedApiRequest(request, handlePOST, "衣物保存失败");
+}
+
+export function PATCH(request: Request) {
+  return withProtectedApiRequest(request, handlePATCH, "衣物更新失败");
+}
+
+export function DELETE(request: Request) {
+  return withProtectedApiRequest(request, handleDELETE, "衣物删除失败");
 }

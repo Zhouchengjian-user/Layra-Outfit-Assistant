@@ -7,6 +7,7 @@ import {
 } from "@aws-sdk/client-s3";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { getStorageRequestContext, type StorageRequestContext } from "./storage-request-context";
 
 export type StoredObject = { body: Uint8Array<ArrayBuffer>; contentType: string };
 
@@ -16,13 +17,18 @@ export type StoredObject = { body: Uint8Array<ArrayBuffer>; contentType: string 
  * - 未配置时使用本地文件目录（本地开发，零依赖）。
  */
 function isS3(): boolean {
-  return Boolean(process.env.TOS_BUCKET);
+  if (process.env.TOS_BUCKET) return true;
+  const production = process.env.NODE_ENV === "production" || process.env.ENV?.trim().toLowerCase() === "prod";
+  if (production) {
+    throw new Error("生产环境必须配置 TOS_BUCKET，禁止使用实例本地文件系统");
+  }
+  return false;
 }
 
 const LOCAL_DATA_DIR = join(process.cwd(), ".data", "objects");
 
 // ---------- S3（TOS）----------
-let clientPromise: Promise<S3Client> | null = null;
+let staticClientPromise: Promise<S3Client> | null = null;
 
 function bucketName(): string {
   const bucket = process.env.TOS_BUCKET;
@@ -30,21 +36,60 @@ function bucketName(): string {
   return bucket;
 }
 
-async function getS3Client(): Promise<S3Client> {
-  if (!clientPromise) {
-    clientPromise = Promise.resolve(
-      new S3Client({
-        region: process.env.TOS_REGION || "cn-beijing",
-        endpoint: process.env.TOS_ENDPOINT || undefined,
-        credentials: {
-          accessKeyId: process.env.TOS_ACCESS_KEY_ID || "",
-          secretAccessKey: process.env.TOS_ACCESS_KEY_SECRET || "",
-        },
-        forcePathStyle: true,
-      }),
-    );
+type S3Credentials = Pick<StorageRequestContext, "accessKeyId" | "secretAccessKey"> &
+  Partial<Pick<StorageRequestContext, "sessionToken">>;
+
+function createS3Client(credentials: S3Credentials): S3Client {
+  return new S3Client({
+    region: process.env.TOS_REGION || "cn-beijing",
+    endpoint: process.env.TOS_ENDPOINT || undefined,
+    credentials,
+    // 火山引擎 TOS 的 S3 兼容接口仅支持 VirtualHostStyle：
+    // https://{bucket}.tos-s3-{region}.volces.com/{key}
+    forcePathStyle: false,
+  });
+}
+
+function envS3Credentials(): S3Credentials {
+  const sessionToken = process.env.TOS_SESSION_TOKEN;
+  return {
+    accessKeyId: process.env.TOS_ACCESS_KEY_ID || "",
+    secretAccessKey: process.env.TOS_ACCESS_KEY_SECRET || "",
+    ...(sessionToken ? { sessionToken } : {}),
+  };
+}
+
+async function getStaticS3Client(credentials: S3Credentials): Promise<S3Client> {
+  if (!staticClientPromise) {
+    staticClientPromise = Promise.resolve(createS3Client(credentials));
   }
-  return clientPromise;
+  return staticClientPromise;
+}
+
+async function withS3Client<T>(operation: (client: S3Client) => Promise<T>): Promise<T> {
+  const requestCredentials = getStorageRequestContext();
+  if (requestCredentials) {
+    // veFaaS 角色凭据有有效期且按请求注入，绝不能放入进程级客户端缓存。
+    const client = createS3Client(requestCredentials);
+    try {
+      return await operation(client);
+    } finally {
+      client.destroy();
+    }
+  }
+
+  const envCredentials = envS3Credentials();
+  if (envCredentials.sessionToken) {
+    // 本地也可能注入可轮换的 STS 三元组，同样不复用进程级客户端。
+    const client = createS3Client(envCredentials);
+    try {
+      return await operation(client);
+    } finally {
+      client.destroy();
+    }
+  }
+
+  return operation(await getStaticS3Client(envCredentials));
 }
 
 async function collect(body: unknown): Promise<Uint8Array<ArrayBuffer>> {
@@ -88,8 +133,9 @@ async function toBuffer(body: PutBody): Promise<Buffer> {
 export async function storagePut(key: string, body: PutBody, contentType: string): Promise<void> {
   const data = await toBuffer(body);
   if (isS3()) {
-    const client = await getS3Client();
-    await client.send(new PutObjectCommand({ Bucket: bucketName(), Key: key, Body: data, ContentType: contentType }));
+    await withS3Client((client) =>
+      client.send(new PutObjectCommand({ Bucket: bucketName(), Key: key, Body: data, ContentType: contentType })),
+    );
     return;
   }
   const filePath = localPath(key);
@@ -101,10 +147,11 @@ export async function storagePut(key: string, body: PutBody, contentType: string
 /** 读取对象；不存在返回 null。 */
 export async function storageGet(key: string): Promise<StoredObject | null> {
   if (isS3()) {
-    const client = await getS3Client();
     try {
-      const response = await client.send(new GetObjectCommand({ Bucket: bucketName(), Key: key }));
-      return { body: await collect(response.Body), contentType: response.ContentType || "application/octet-stream" };
+      return await withS3Client(async (client) => {
+        const response = await client.send(new GetObjectCommand({ Bucket: bucketName(), Key: key }));
+        return { body: await collect(response.Body), contentType: response.ContentType || "application/octet-stream" };
+      });
     } catch (error) {
       if (isS3NotFound(error)) return null;
       throw error;
@@ -119,8 +166,7 @@ export async function storageGet(key: string): Promise<StoredObject | null> {
 /** 删除对象。 */
 export async function storageDelete(key: string): Promise<void> {
   if (isS3()) {
-    const client = await getS3Client();
-    await client.send(new DeleteObjectCommand({ Bucket: bucketName(), Key: key }));
+    await withS3Client((client) => client.send(new DeleteObjectCommand({ Bucket: bucketName(), Key: key })));
     return;
   }
   const filePath = localPath(key);
@@ -131,12 +177,12 @@ export async function storageDelete(key: string): Promise<void> {
 /** 判断对象是否存在。 */
 export async function storageExists(key: string): Promise<boolean> {
   if (isS3()) {
-    const client = await getS3Client();
     try {
-      await client.send(new HeadObjectCommand({ Bucket: bucketName(), Key: key }));
+      await withS3Client((client) => client.send(new HeadObjectCommand({ Bucket: bucketName(), Key: key })));
       return true;
-    } catch {
-      return false;
+    } catch (error) {
+      if (isS3NotFound(error)) return false;
+      throw error;
     }
   }
   return existsSync(localPath(key));
