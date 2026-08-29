@@ -1,8 +1,10 @@
-import { requireServerEnv } from "../../../lib/server-env";
+import { createHash } from "node:crypto";
+import sharp from "sharp";
+import { getServerEnv, requireServerEnv } from "../../../lib/server-env";
 import { getOwner, ownerJson, withOwnerCookie } from "../../../lib/owner";
 import { dbAll, dbFirst } from "../../../lib/db";
 import { storageGet, storagePut } from "../../../lib/storage";
-import { apiErrorResponse } from "../../../lib/observability";
+import { apiErrorResponse, logServerEvent } from "../../../lib/observability";
 import { withProtectedApiRequest } from "../../../lib/protected-route";
 import {
   completeAiTask,
@@ -17,40 +19,211 @@ import {
 
 type ImageRow = { id: string; name: string; category: string; imageKey: string };
 
-function toBase64(buffer: ArrayBuffer | Uint8Array) {
-  const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
-  let binary = "";
-  for (let offset = 0; offset < bytes.length; offset += 0x8000) binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
-  return btoa(binary);
+type ArkPayload = {
+  data?: Array<{ b64_json?: string; url?: string; output_format?: string; error?: { message?: string; code?: string } }>;
+  error?: { message?: string; code?: string };
+};
+
+type GeneratedImage = {
+  bytes: Uint8Array<ArrayBuffer>;
+  contentType: string;
+  providerMs: number;
+  fastPromptUsed: boolean;
+  fastPromptFallback: boolean;
+};
+
+type CachedGeneration = GeneratedImage & {
+  preprocessMs: number;
+  inputBytes: number;
+  storageMs: number;
+};
+
+const DEFAULT_ARK_MODEL = "doubao-seedream-5-0-lite-260128";
+// Seedream 5.0 lite requires at least 2560x1440 total pixels for explicit W×H.
+const DEFAULT_ARK_SIZE = "1920x1920";
+const MIN_SAFE_ARK_PIXELS = 2_560 * 1_440;
+const MAX_SAFE_ARK_PIXELS = 4_096 * 4_096;
+const SEMANTIC_CACHE_VERSION = "outfit-visualization-v2";
+const PROMPT_VERSION = "tryon-prompt-v2";
+const inFlightSemanticGenerations = new Map<string, Promise<CachedGeneration>>();
+
+function normalizedText(value: FormDataEntryValue | null, fallback: string, maxLength: number) {
+  return String(value || fallback).trim().replace(/\s+/g, " ").slice(0, maxLength) || fallback;
 }
 
-async function imageDataUrl(key: string, fallbackType = "image/jpeg") {
+function resolveArkSize() {
+  const configured = getServerEnv("ARK_IMAGE_SIZE");
+  if (!configured) return DEFAULT_ARK_SIZE;
+  if (["2K", "3K", "4K"].includes(configured.toUpperCase())) return configured.toUpperCase();
+  const match = /^(\d{3,4})x(\d{3,4})$/i.exec(configured);
+  if (!match) return DEFAULT_ARK_SIZE;
+  const width = Number(match[1]);
+  const height = Number(match[2]);
+  const pixels = width * height;
+  const ratio = Math.max(width / height, height / width);
+  return pixels >= MIN_SAFE_ARK_PIXELS && pixels <= MAX_SAFE_ARK_PIXELS && ratio <= 16
+    ? `${width}x${height}`
+    : DEFAULT_ARK_SIZE;
+}
+
+function supportsFastPromptOptimization(model: string) {
+  const configured = getServerEnv("ARK_OPTIMIZE_PROMPT_MODE").toLowerCase();
+  if (configured === "fast") return true;
+  if (configured === "standard" || configured === "off" || configured === "disabled") return false;
+  // Officially, fast is currently unavailable on Seedream 5.0 lite and 4.5.
+  return /seedream-(?:5-0-pro|4-0)(?:-|$)/i.test(model);
+}
+
+function supportsJpegOutput(model: string) {
+  // Keep custom endpoint IDs compatible: only send this newer option when the
+  // configured model name positively identifies a supporting 5.0 variant.
+  return /seedream-5-0-(?:pro|lite)(?:-|$)/i.test(model);
+}
+
+async function optimizedImageDataUrl(key: string, maxEdge: number, quality: number) {
   const object = await storageGet(key);
   if (!object) throw new Error("生成所需的图片不存在");
-  const contentType = object.contentType || fallbackType;
-  return `data:${contentType};base64,${toBase64(object.body)}`;
+  const bytes = await sharp(object.body, { failOn: "none", limitInputPixels: 80_000_000 })
+    .rotate()
+    .resize({ width: maxEdge, height: maxEdge, fit: "inside", withoutEnlargement: true })
+    .flatten({ background: "#ffffff" })
+    .jpeg({ quality, chromaSubsampling: "4:2:0", progressive: false })
+    .toBuffer();
+  return {
+    dataUrl: `data:image/jpeg;base64,${bytes.toString("base64")}`,
+    byteLength: bytes.byteLength,
+  };
 }
 
-async function generateTryOnImage(images: string[], prompt: string) {
-  const apiKey = requireServerEnv("ARK_API_KEY");
+function arkError(payload: ArkPayload) {
+  const nested = payload.data?.find(item => item.error)?.error;
+  return payload.error || nested;
+}
+
+function shouldRetryWithoutFast(status: number, payload: ArkPayload) {
+  if (status !== 400 && status !== 422) return false;
+  const error = arkError(payload);
+  return /optimize[_ ]?prompt|fast|mode|unsupported|not support|invalid parameter/i.test(`${error?.code || ""} ${error?.message || ""}`);
+}
+
+async function requestArkImage(images: string[], prompt: string, model: string, size: string, useFastPrompt: boolean) {
+  const body: Record<string, unknown> = {
+    model,
+    prompt,
+    image: images,
+    size,
+    response_format: "url",
+    sequential_image_generation: "disabled",
+    stream: false,
+    watermark: false,
+  };
+  if (supportsJpegOutput(model)) body.output_format = "jpeg";
+  if (useFastPrompt) body.optimize_prompt_options = { mode: "fast" };
   const response = await fetch("https://ark.cn-beijing.volces.com/api/v3/images/generations", {
     method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-    body: JSON.stringify({
-      model: "doubao-seedream-5-0-lite-260128",
-      prompt,
-      image: images,
-      size: "1920x1920",
-      response_format: "url",
-      watermark: false,
-    }),
-    signal: AbortSignal.timeout(180_000),
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${requireServerEnv("ARK_API_KEY")}` },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(120_000),
   });
-  const payload = await response.json() as { data?: Array<{ url?: string }>; error?: { message?: string; code?: string } };
-  if (!response.ok || !payload.data?.[0]?.url) {
-    throw new Error(payload.error?.message || payload.error?.code || "个人穿搭效果图生成失败");
+  const payload = await response.json().catch(() => ({})) as ArkPayload;
+  return { response, payload };
+}
+
+async function generateTryOnImage(images: string[], prompt: string, model: string, size: string): Promise<GeneratedImage> {
+  const startedAt = performance.now();
+  const fastPromptRequested = supportsFastPromptOptimization(model);
+  let attempt = await requestArkImage(images, prompt, model, size, fastPromptRequested);
+  let fastPromptFallback = false;
+  if (fastPromptRequested && !attempt.response.ok && shouldRetryWithoutFast(attempt.response.status, attempt.payload)) {
+    fastPromptFallback = true;
+    logServerEvent("warn", "outfit_visualization_fast_prompt_fallback", {
+      model,
+      provider_status: attempt.response.status,
+      provider_code: arkError(attempt.payload)?.code,
+    });
+    attempt = await requestArkImage(images, prompt, model, size, false);
   }
-  return payload.data[0].url;
+  const image = attempt.payload.data?.[0];
+  if (!attempt.response.ok || (!image?.b64_json && !image?.url)) {
+    const error = arkError(attempt.payload);
+    throw new Error(error?.message || error?.code || "个人穿搭效果图生成失败");
+  }
+  if (image.b64_json) {
+    return {
+      bytes: Uint8Array.from(Buffer.from(image.b64_json, "base64")),
+      contentType: image.output_format === "png" ? "image/png" : "image/jpeg",
+      providerMs: Math.round(performance.now() - startedAt),
+      fastPromptUsed: fastPromptRequested && !fastPromptFallback,
+      fastPromptFallback,
+    };
+  }
+  const generated = await fetch(image.url!, { signal: AbortSignal.timeout(6_000) });
+  if (!generated.ok) throw new Error("效果图下载失败");
+  return {
+    bytes: new Uint8Array(await generated.arrayBuffer()),
+    contentType: generated.headers.get("Content-Type") || (supportsJpegOutput(model) ? "image/jpeg" : "image/png"),
+    providerMs: Math.round(performance.now() - startedAt),
+    fastPromptUsed: fastPromptRequested && !fastPromptFallback,
+    fastPromptFallback,
+  };
+}
+
+function semanticCacheHash(input: {
+  ownerId: string;
+  profileImageVersion: string;
+  garmentImageVersions: string[];
+  scene: string;
+  prompt: string;
+  model: string;
+  size: string;
+}) {
+  return createHash("sha256").update(JSON.stringify({ version: SEMANTIC_CACHE_VERSION, promptVersion: PROMPT_VERSION, ...input })).digest("hex");
+}
+
+function buildTryOnPrompt(items: ImageRow[], scene: string, userPrompt: string) {
+  const references = items.map((item, index) => `图${index + 2}是${item.name}（${item.category}）`).join("；");
+  return `图1是用户全身照，${references}。请将图2至图${items.length + 1}的全部单品按真实类别穿戴到图1人物身上：不得遗漏、替换或新增单品，保留每件的主色、版型、长度、材质、纹理和图案。保持人物的脸、发型、肤色、身材比例和自然姿态，从头到脚完整入镜。场景：${scene}。补充要求：${userPrompt}。写实服装摄影，浅灰影棚，柔和自然光，无文字、水印、边框、多人或多余肢体。`;
+}
+
+function sharedSemanticGeneration(key: string, generate: () => Promise<CachedGeneration>) {
+  const running = inFlightSemanticGenerations.get(key);
+  if (running) return { promise: running, joined: true };
+  const promise = generate().finally(() => inFlightSemanticGenerations.delete(key));
+  inFlightSemanticGenerations.set(key, promise);
+  return { promise, joined: false };
+}
+
+function generatedImageResponse(
+  bytes: Uint8Array<ArrayBuffer>,
+  contentType: string,
+  owner: ReturnType<typeof getOwner>,
+  taskId: string,
+  values: {
+    cache: "HIT" | "MISS" | "COALESCED" | "TASK";
+    totalMs: number;
+    cacheMs?: number;
+    preprocessMs?: number;
+    providerMs?: number;
+    storageMs?: number;
+  },
+) {
+  const serverTiming = [
+    values.cacheMs === undefined ? "" : `semantic-cache;dur=${values.cacheMs}`,
+    values.preprocessMs === undefined ? "" : `preprocess;dur=${values.preprocessMs}`,
+    values.providerMs === undefined ? "" : `seedream;dur=${values.providerMs}`,
+    values.storageMs === undefined ? "" : `storage;dur=${values.storageMs}`,
+  ].filter(Boolean).join(", ");
+  const headers = new Headers({
+    "Content-Type": contentType,
+    "Cache-Control": "private, no-store",
+    "X-Yida-Output": "personal-outfit-preview",
+    "X-Yida-Task-Id": taskId,
+    "X-Layra-Provider": "volcengine-seedream",
+    "X-Layra-Cache": values.cache,
+    "X-Layra-Latency-Ms": String(values.totalMs),
+  });
+  if (serverTiming) headers.set("Server-Timing", serverTiming);
+  return withOwnerCookie(new Response(bytes, { headers }), owner);
 }
 
 async function storedResult(task: AiTask, owner: ReturnType<typeof getOwner>) {
@@ -62,6 +235,7 @@ async function storedResult(task: AiTask, owner: ReturnType<typeof getOwner>) {
     "Cache-Control": "private, no-store",
     "X-Yida-Output": "personal-outfit-preview",
     "X-Yida-Task-Id": task.id,
+    "X-Layra-Cache": "TASK",
   });
   return withOwnerCookie(new Response(object.body, { headers }), owner);
 }
@@ -83,6 +257,7 @@ async function handleGET(request: Request) {
 
 async function handlePOST(request: Request) {
   const owner = getOwner(request);
+  const startedAt = performance.now();
   const idempotencyKey = readIdempotencyKey(request);
   if (!idempotencyKey) return ownerJson({ error: "请刷新页面后重新生成", code: "INVALID_IDEMPOTENCY_KEY" }, owner, 400);
   let taskId = "";
@@ -95,10 +270,6 @@ async function handlePOST(request: Request) {
     const contentType = request.headers.get("content-type") || "";
     if (!contentType.includes("multipart/form-data")) return ownerJson({ error: "请刷新页面后重新生成效果图" }, owner, 400);
     const form = await request.formData();
-    const outfitBoard = form.get("outfitBoard");
-    if (!(outfitBoard instanceof File) || !outfitBoard.type.startsWith("image/") || outfitBoard.size > 8 * 1024 * 1024) {
-      return ownerJson({ error: "搭配参考图无效，请刷新页面后重试" }, owner, 400);
-    }
     let submittedIds: unknown = [];
     try { submittedIds = JSON.parse(String(form.get("itemIds") || "[]")); } catch { submittedIds = []; }
     const itemIds = [...new Set((Array.isArray(submittedIds) ? submittedIds : []).map(String))].slice(0, 6);
@@ -109,12 +280,39 @@ async function handlePOST(request: Request) {
     const rows = await dbAll<ImageRow>(`SELECT id, name, category, image_key AS imageKey FROM wardrobe_items
       WHERE owner_id = ? AND status = 'available' AND id IN (${placeholders})`, [owner.id, ...itemIds]);
     if (rows.length !== itemIds.length) return ownerJson({ error: "搭配中的部分衣物已不在衣柜，请重新推荐" }, owner, 409);
-    const ordered = itemIds.map(id => rows.find(item => item.id === id)!).filter(Boolean);
+    // The provider does not care about selection order. A stable image-version order
+    // makes semantically identical requests share the same prompt and cache entry.
+    const ordered = rows.slice().sort((left, right) => {
+      if (left.imageKey < right.imageKey) return -1;
+      if (left.imageKey > right.imageKey) return 1;
+      return left.id.localeCompare(right.id);
+    });
+    const title = normalizedText(form.get("title"), "今日搭配", 30);
+    const scene = normalizedText(form.get("scene"), "日常", 20);
+    const userPrompt = normalizedText(form.get("prompt"), "自然、舒适、比例协调", 180);
+    const model = getServerEnv("ARK_IMAGE_MODEL") || DEFAULT_ARK_MODEL;
+    const size = resolveArkSize();
+    const garmentImageVersions = ordered.map(item => item.imageKey);
+    const semanticHash = semanticCacheHash({
+      ownerId: owner.id,
+      profileImageVersion: profile.imageKey,
+      garmentImageVersions,
+      scene,
+      prompt: userPrompt,
+      model,
+      size,
+    });
+    const resultKey = `outfit-results/semantic-v2/${owner.id}/${semanticHash}`;
     const requestSummary = JSON.stringify({
       itemIds,
-      title: String(form.get("title") || "今日搭配").slice(0, 30),
-      scene: String(form.get("scene") || "日常").slice(0, 20),
-      prompt: String(form.get("prompt") || "自然、舒适、比例协调").slice(0, 180),
+      title,
+      scene,
+      prompt: userPrompt,
+      profileImageVersion: profile.imageKey,
+      garmentImageVersions,
+      model,
+      size,
+      semanticHash,
     });
     const started = await startAiTask(owner.id, "outfit-visualization", idempotencyKey, requestSummary);
     taskId = started.task.id;
@@ -123,41 +321,78 @@ async function handlePOST(request: Request) {
       if (started.task.status === "failed") return ownerJson({ task: taskPayload(started.task), error: "上次效果图生成失败，请点击重试" }, owner, 409);
       return ownerJson({ task: taskPayload(started.task) }, owner, 202);
     }
-    const modelImage = await imageDataUrl(profile.imageKey, profile.contentType);
-    const garmentImages: string[] = [];
-    for (const item of ordered) {
-      garmentImages.push(await imageDataUrl(item.imageKey, "image/png"));
+    const cacheStartedAt = performance.now();
+    const cached = await storageGet(resultKey);
+    const cacheMs = Math.round(performance.now() - cacheStartedAt);
+    if (cached?.body.byteLength) {
+      const resultContentType = cached.contentType || "image/jpeg";
+      await completeAiTask(taskId, { resultKey, resultContentType });
+      const totalMs = Math.round(performance.now() - startedAt);
+      logServerEvent("info", "outfit_visualization_cache_hit", {
+        total_ms: totalMs,
+        cache_ms: cacheMs,
+        item_count: ordered.length,
+        model,
+        size,
+      });
+      return generatedImageResponse(cached.body, resultContentType, owner, taskId, {
+        cache: "HIT",
+        totalMs,
+        cacheMs,
+      });
     }
-    const images = [modelImage, ...garmentImages];
-    const tryOnPrompt = `图一是用户本人的全身照（模特）。图二到图${images.length}依次是本次搭配的每一件衣柜单品，共 ${ordered.length} 件，请逐件核对、任何一件都不得遗漏。
-单品清单（按图片顺序）：
-${ordered.map((item, i) => `图${i + 2} = ${item.name}（${item.category}）`).join("；")}
 
-生成一张写实、高清、完整全身的穿搭效果图，把图二到图${images.length}的每一件单品都准确穿到图一人物身上，一件都不能少：
-- 上衣类穿在上身，下装类穿在下身，鞋履穿在脚上；
-- 配饰（帽子、包、腰带、首饰）按真实佩戴/携带方式呈现；
-- 逐件对照清单核对，确保 ${ordered.length} 件全部出现，不得漏掉任何一件、不得替换成相似款、不得增加额外单品；
-- 严格保持图一人物的脸部、发型、肤色、身材比例；
-- 保持每件单品的主色、版型、长度、材质、纹理和可见图案。
-场景为${String(form.get("scene") || "日常").slice(0, 20)}，搭配方案是${String(form.get("title") || "今日搭配").slice(0, 30)}，补充要求：${String(form.get("prompt") || "自然、舒适、比例协调").slice(0, 180)}。
-人物从头到脚完整入镜，双脚不可裁切，站姿自然，简洁高级的浅灰影棚背景，柔和自然光，真实服装摄影质感，无文字、无水印、无边框、无多人、无额外肢体。`;
-    const generatedUrl = await generateTryOnImage(images, tryOnPrompt);
-    const generated = await fetch(generatedUrl, { signal: AbortSignal.timeout(60_000) });
-    if (!generated.ok) throw new Error("效果图下载失败");
-    const resultContentType = generated.headers.get("Content-Type") || "image/png";
-    const resultBytes = await generated.arrayBuffer();
-    const resultKey = `outfit-results/${owner.id}/${taskId}`;
-    await storagePut(resultKey, resultBytes, resultContentType);
-    await completeAiTask(taskId, { resultKey, resultContentType });
-    const headers = new Headers({
-      "Content-Type": resultContentType,
-      "Cache-Control": "private, no-store",
-      "X-Yida-Output": "personal-outfit-preview",
-      "X-Yida-Task-Id": taskId,
+    const tryOnPrompt = buildTryOnPrompt(ordered, scene, userPrompt);
+    const shared = sharedSemanticGeneration(resultKey, async () => {
+      const preprocessStartedAt = performance.now();
+      const optimizedImages = await Promise.all([
+        optimizedImageDataUrl(profile.imageKey, 1280, 86),
+        ...ordered.map(item => optimizedImageDataUrl(item.imageKey, 640, 84)),
+      ]);
+      const preprocessMs = Math.round(performance.now() - preprocessStartedAt);
+      const generated = await generateTryOnImage(
+        optimizedImages.map(image => image.dataUrl),
+        tryOnPrompt,
+        model,
+        size,
+      );
+      const storageStartedAt = performance.now();
+      await storagePut(resultKey, generated.bytes, generated.contentType);
+      const storageMs = Math.round(performance.now() - storageStartedAt);
+      return {
+        ...generated,
+        preprocessMs,
+        inputBytes: optimizedImages.reduce((sum, image) => sum + image.byteLength, 0),
+        storageMs,
+      };
     });
-    return withOwnerCookie(new Response(resultBytes, { headers }), owner);
+    const generated = await shared.promise;
+    await completeAiTask(taskId, { resultKey, resultContentType: generated.contentType });
+    const totalMs = Math.round(performance.now() - startedAt);
+    logServerEvent("info", "outfit_visualization_completed", {
+      provider: "volcengine-seedream",
+      provider_ms: generated.providerMs,
+      preprocess_ms: generated.preprocessMs,
+      storage_ms: generated.storageMs,
+      total_ms: totalMs,
+      input_bytes: generated.inputBytes,
+      item_count: ordered.length,
+      model,
+      size,
+      cache: shared.joined ? "coalesced" : "miss",
+      fast_prompt_used: generated.fastPromptUsed,
+      fast_prompt_fallback: generated.fastPromptFallback,
+    });
+    return generatedImageResponse(generated.bytes, generated.contentType, owner, taskId, {
+      cache: shared.joined ? "COALESCED" : "MISS",
+      totalMs,
+      cacheMs,
+      preprocessMs: generated.preprocessMs,
+      providerMs: generated.providerMs,
+      storageMs: generated.storageMs,
+    });
   } catch (error) {
-    if (taskId) await failAiTask(taskId).catch(() => undefined);
+    if (taskId) await failAiTask(taskId, error).catch(() => undefined);
     return apiErrorResponse(request, error, "个人穿搭效果图生成失败");
   }
 }

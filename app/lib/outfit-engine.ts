@@ -102,7 +102,10 @@ export function deriveStylingIntent(context: StylingContext): StylingIntent {
   ])].slice(0, 6);
   const formalityDelta = includesAny(prompt, ["不太正式", "休闲", "松弛"]) ? -1 : includesAny(prompt, ["正式", "商务", "庄重"]) ? 1 : 0;
   const colorPreference = ["黑", "白", "灰", "米", "棕", "蓝", "绿", "红", "粉", "紫", "黄"].find(color => prompt.includes(color)) || "不限定";
-  const requirements = ["显高", "显瘦", "显比例", "舒服", "保暖", "防雨", "不撞色", "有层次"].filter(word => prompt.includes(word));
+  const requirements = [...new Set([
+    ...["显高", "显瘦", "显比例", "舒服", "保暖", "防雨", "有层次"].filter(word => prompt.includes(word)),
+    ...(includesAny(prompt, ["不撞色", "不要撞色", "避免撞色"]) ? ["不撞色"] : []),
+  ])];
   return {
     occasion: context.scene,
     styles,
@@ -320,4 +323,3 @@ export function reviewOutfit(
   const highlights = candidateHighlights(breakdown, intent);
   return { intent, score, breakdown, highlights };
 }
-

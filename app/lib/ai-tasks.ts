@@ -84,10 +84,19 @@ export async function completeAiTask(id: string, values: { resultJson?: string; 
   );
 }
 
-export async function failAiTask(id: string) {
+function taskErrorMessage(error: unknown) {
+  const message = error instanceof Error
+    ? error.message
+    : typeof error === "string"
+      ? error
+      : "AI 任务执行失败";
+  return message.trim().slice(0, 512) || "AI 任务执行失败";
+}
+
+export async function failAiTask(id: string, error?: unknown) {
   await dbRun(
-    "UPDATE ai_tasks SET status = 'failed', error_message = NULL, updated_at = ? WHERE id = ?",
-    [Date.now(), id],
+    "UPDATE ai_tasks SET status = 'failed', error_message = ?, updated_at = ? WHERE id = ?",
+    [taskErrorMessage(error), Date.now(), id],
   );
 }
 
@@ -97,5 +106,11 @@ export function readIdempotencyKey(request: Request) {
 }
 
 export function taskPayload(task: AiTask) {
-  return { id: task.id, kind: task.kind, status: task.status, updatedAt: task.updatedAt };
+  return {
+    id: task.id,
+    kind: task.kind,
+    status: task.status,
+    error: task.status === "failed" ? task.errorMessage : null,
+    updatedAt: task.updatedAt,
+  };
 }

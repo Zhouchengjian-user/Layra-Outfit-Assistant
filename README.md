@@ -72,7 +72,20 @@ DASHSCOPE_VISION_MODEL=qwen3-vl-flash
 DASHSCOPE_IMAGE_ENDPOINT=https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation
 DASHSCOPE_PRODUCT_IMAGE_MODEL=qwen-image-2.0
 DASHSCOPE_PRODUCT_IMAGE_SIZE=1536*1536
+DASHSCOPE_GARMENT_RECONSTRUCTION_MODEL=qwen-image-2.0
+DASHSCOPE_GARMENT_RECONSTRUCTION_SIZE=1024*1024
+DASHSCOPE_GARMENT_RECONSTRUCTION_CANDIDATES=2
+
 ARK_API_KEY=<secret>
+# 可选：只有填写当前账号已开通的视觉模型或推理接入点 ID 时，才启用识别降级。
+ARK_VISION_MODEL=
+ARK_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
+ARK_IMAGE_MODEL=doubao-seedream-5-0-lite-260128
+ARK_IMAGE_SIZE=1920x1920
+# 可选：百炼生成服务欠费或鉴权失败时，商品图自动切换到这组 Seedream 配置。
+ARK_GARMENT_RECONSTRUCTION_MODEL=
+ARK_GARMENT_RECONSTRUCTION_SIZE=
+ARK_GARMENT_RECONSTRUCTION_CANDIDATES=2
 
 SQLITE_PATH=/tmp/data/yida.sqlite
 SQLITE_BACKUP_INTERVAL_MS=300000
@@ -258,3 +271,6 @@ SQLite 方案只适合早期单实例、低并发阶段。出现以下任一情�
 - `db/mysql/0000_init.sql`：后续 MySQL 迁移表结构
 - `Dockerfile`：`linux/amd64` standalone 生产镜像
 - `tests/`：认证、持久化、存储上下文和业务回归测试
+## ComfyUI 衣物抠图
+
+项目支持把单件衣物抠图切换到 ComfyUI 官方 BiRefNet 工作流，并在服务不可用或蒙版质量不合格时回退云端。配置和工作流文件见 [`workflows/comfyui/README.md`](workflows/comfyui/README.md)。配置完成后仍从“我的衣柜”上传照片测试，衣物卡会显示实际抠图引擎。

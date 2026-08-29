@@ -19,7 +19,7 @@ import {
   type StylingIntent,
   type WardrobeMatchItem,
 } from "../../../lib/outfit-engine";
-import { apiErrorResponse } from "../../../lib/observability";
+import { apiErrorResponse, logServerEvent } from "../../../lib/observability";
 import { withProtectedApiRequest } from "../../../lib/protected-route";
 
 type WardrobeRow = {
@@ -197,18 +197,22 @@ async function handlePOST(request: Request) {
       return ownerJson({ task: taskPayload(started.task) }, owner, 202);
     }
 
-    const apiKey = requireServerEnv("DASHSCOPE_API_KEY");
-    const baseUrl = (getServerEnv("DASHSCOPE_BASE_URL") || "https://dashscope.aliyuncs.com/compatible-mode/v1").replace(/\/$/, "");
-    const model = getServerEnv("DASHSCOPE_VISION_MODEL") || "qwen3-vl-flash";
-    const response = await fetch(`${baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model,
-        temperature: 0.2,
-        enable_thinking: false,
-        max_tokens: 900,
-        messages: [{ role: "user", content: `你是易搭的时装编辑。系统已经按颜色、版型、天气、场合和偏好计算出候选搭配，你只负责从候选中挑出三套最有审美、且彼此有差异的方案，不得新增、删除或替换候选里的单品。
+    let editorResult: Record<string, unknown> = {};
+    let selectionSource: "qwen-editor" | "rules-fallback" = "rules-fallback";
+    const editorStartedAt = performance.now();
+    try {
+      const apiKey = requireServerEnv("DASHSCOPE_API_KEY");
+      const baseUrl = (getServerEnv("DASHSCOPE_BASE_URL") || "https://dashscope.aliyuncs.com/compatible-mode/v1").replace(/\/$/, "");
+      const model = getServerEnv("DASHSCOPE_VISION_MODEL") || "qwen3-vl-flash";
+      const response = await fetch(`${baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model,
+          temperature: 0.2,
+          enable_thinking: false,
+          max_tokens: 900,
+          messages: [{ role: "user", content: `你是 LAYRA 的时装编辑。系统已经按颜色、版型、天气、场合和偏好计算出候选搭配，你只负责从候选中挑出三套最有审美、且彼此有差异的方案，不得新增、删除或替换候选里的单品。
 
 用户需求：${prompt}
 场合：${scene}
@@ -222,15 +226,25 @@ async function handlePOST(request: Request) {
 3. 穿搭中最多一个强主角，其他单品负责衔接；兼顾上松下收或上短下长等比例关系。
 4. reason 用朋友口吻，说明颜色、比例、天气和场合，不提分数、算法、编号或 UUID。
 5. 只返回严格JSON对象：{"recommendations":[{"candidateId":"candidate-01","title":"","reason":"","highlights":[],"missingSuggestion":""}]}。` }],
-      }),
-      signal: AbortSignal.timeout(60_000),
-    });
-    const payload = await response.json() as { choices?: Array<{ message?: { content?: string } }>; error?: { message?: string } };
-    if (!response.ok) throw new Error(payload.error?.message || "AI 搭配暂时不可用");
-    const normalized = normalizeResult(parseJsonObject(payload.choices?.[0]?.message?.content || ""), candidates, items, intent);
+        }),
+        signal: AbortSignal.timeout(3_800),
+      });
+      const payload = await response.json() as { choices?: Array<{ message?: { content?: string } }>; error?: { message?: string } };
+      if (!response.ok) throw new Error(payload.error?.message || "AI 搭配暂时不可用");
+      editorResult = parseJsonObject(payload.choices?.[0]?.message?.content || "");
+      selectionSource = "qwen-editor";
+    } catch (error) {
+      logServerEvent("warn", "outfit_editor_fallback", {
+        reason: error instanceof Error ? error.name : typeof error,
+        elapsed_ms: Math.round(performance.now() - editorStartedAt),
+        candidate_count: candidates.length,
+      });
+    }
+    const normalized = normalizeResult(editorResult, candidates, items, intent);
     const itemMap = new Map(items.map(item => [item.id, item]));
     const resultPayload = {
       ...normalized,
+      selectionSource,
       recommendations: normalized.recommendations.map(look => ({
         ...look,
         items: look.itemIds.map(id => itemMap.get(id)).filter(Boolean).map(item => ({

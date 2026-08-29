@@ -32,7 +32,7 @@ async function aiSuggestion(items: WardrobeMatchItem[], breakdown: Record<string
     const baseUrl = (getServerEnv("DASHSCOPE_BASE_URL") || "https://dashscope.aliyuncs.com/compatible-mode/v1").replace(/\/$/, "");
     const model = getServerEnv("DASHSCOPE_VISION_MODEL") || "qwen3-vl-flash";
     const itemDesc = items.map(item => `${item.name}（${item.category}·${item.colorName}）`).join("、");
-    const prompt = `你是易搭的穿搭顾问。用户手动搭配了一套：${itemDesc}。场景是${scene}。
+    const prompt = `你是 LAYRA 的穿搭顾问。用户手动搭配了一套：${itemDesc}。场景是${scene}。
 系统从颜色、版型、场合、天气四方面打分（满分100）：颜色${Math.round(breakdown.color)}、版型${Math.round(breakdown.silhouette)}、场合${Math.round(breakdown.occasion)}、天气${Math.round(breakdown.weather)}。
 请用朋友口吻写一段点评（80字以内）：先肯定这套的优点，再给一个具体的小改进建议（比如换某件单品、调整颜色或比例）。不要提分数、算法或编号。只返回点评文字本身。`;
     const response = await fetch(`${baseUrl}/chat/completions`, {

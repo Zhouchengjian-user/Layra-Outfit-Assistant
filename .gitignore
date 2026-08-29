@@ -6,6 +6,7 @@
 # next.js
 /.next/
 /out/
+next-env.d.ts
 
 # production
 /dist/
@@ -17,6 +18,7 @@
 .DS_Store
 *.pem
 *.tsbuildinfo
+/.finesse/
 
 # debug
 npm-debug.log*

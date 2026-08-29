@@ -1,7 +1,28 @@
 import { decodeGarmentTags, normalizeGarmentAITags, type GarmentAITags } from "./garment-tags";
 import { requestBlob, requestJson } from "./api-client";
+import {
+  garmentReconstructionReasons,
+  requiresGarmentReconstruction,
+  type GarmentDepictionType,
+} from "./garment-completeness";
+
+export type GarmentReconstructionOutcome =
+  | {
+    status: "ready";
+    blob: Blob;
+    completeness: "pass" | "review";
+    model: string;
+  }
+  | {
+    status: "failed";
+    error: string;
+  };
+
+export type GarmentCompletionStatus = "not-needed" | "generating" | "ready" | "failed";
 
 export type ProcessedGarmentImage = {
+  /** Stable across recognition preview, segmentation and AI reconstruction. */
+  draftKey: string;
   blob: Blob;
   previewUrl: string;
   originalUrl: string;
@@ -13,6 +34,14 @@ export type ProcessedGarmentImage = {
   name: string;
   cutoutQuality: "good" | "review" | "failed";
   aiTags: GarmentAITags;
+  completionStatus: GarmentCompletionStatus;
+  productOrigin: "source-preview" | "segmentation" | "ai-reconstructed";
+  cutoutProvider?: "comfyui-birefnet" | "aliyun-viapi";
+  reconstructionReasons: string[];
+  depictionType: GarmentDepictionType;
+  visibleRatio: number;
+  partiallyOccluded: boolean;
+  reconstructionTask?: Promise<GarmentReconstructionOutcome>;
 };
 
 type GarmentDetection = {
@@ -25,9 +54,38 @@ type GarmentDetection = {
   identity_key?: string;
   source_evidence?: string;
   depiction_type?: "worn" | "product" | "unknown";
+  confidence?: number;
+  visible_ratio?: number;
+  garment_description?: string;
+  tags?: GarmentAITags;
 };
 
 type RGB = { r: number; g: number; b: number };
+type PixelRect = { x: number; y: number; width: number; height: number };
+type AtlasClass = "tops" | "pants";
+type AtlasMetadata = {
+  classes: AtlasClass[];
+  foregroundRatios: number[];
+  foregroundBounds: PixelRect[];
+  sourceWidth: number;
+  sourceHeight: number;
+};
+
+// Preserve enough pixels for shoes, jewelry and small bags in a full-body shot.
+const normalizedImageMaxSide = 1280;
+const productCanvasSize = 1024;
+const productCanvasInset = 54;
+const uploadProcessingBudgetMs = 34_000;
+const minimumFallbackBudgetMs = 1_800;
+const maxClientProductizeRequests = 6;
+// Match the server-side image-generation queue. Starting several long-lived
+// HTTP requests here makes their 120s timeout include time spent waiting for
+// another garment, even though only one provider job can run at a time.
+const maxClientReconstructionRequests = 1;
+const atlasClassByCategory = new Map<string, AtlasClass>([
+  ["上衣", "tops"],
+  ["裤子", "pants"],
+]);
 
 const colorPalette: Array<{ name: string; hex: string; rgb: RGB }> = [
   { name: "白色", hex: "#EEEDEA", rgb: { r: 238, g: 237, b: 234 } },
@@ -75,8 +133,27 @@ function canvasToBlob(canvas: HTMLCanvasElement) {
   return new Promise<Blob>((resolve, reject) => canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error("图片处理失败")), "image/png", 0.92));
 }
 
-function canvasToJpegBlob(canvas: HTMLCanvasElement, quality = 0.9) {
-  return new Promise<Blob>((resolve, reject) => canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error("图片处理失败")), "image/jpeg", quality));
+type ProcessingCanvas = HTMLCanvasElement | OffscreenCanvas;
+type ProcessingContext = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
+
+function createProcessingCanvas(width: number, height: number): ProcessingCanvas {
+  if (typeof OffscreenCanvas !== "undefined") return new OffscreenCanvas(width, height);
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  return canvas;
+}
+
+function processingContext(canvas: ProcessingCanvas, options?: CanvasRenderingContext2DSettings) {
+  return canvas.getContext("2d", options) as ProcessingContext | null;
+}
+
+function canvasToJpegBlob(canvas: ProcessingCanvas, quality = 0.9) {
+  if (typeof OffscreenCanvas !== "undefined" && canvas instanceof OffscreenCanvas) {
+    return canvas.convertToBlob({ type: "image/jpeg", quality });
+  }
+  const htmlCanvas = canvas as HTMLCanvasElement;
+  return new Promise<Blob>((resolve, reject) => htmlCanvas.toBlob(blob => blob ? resolve(blob) : reject(new Error("图片处理失败")), "image/jpeg", quality));
 }
 
 function displayCategory(category: string) {
@@ -103,61 +180,323 @@ function colorForName(name: string) {
   return { name: name || "未识别", hex: "#999999", rgb: { r: 153, g: 153, b: 153 } };
 }
 
-async function createAnalysisBlob(file: File) {
+async function createNormalizedBlob(file: File) {
   const bitmap = await createImageBitmap(file);
-  const scale = Math.min(1, 1600 / Math.max(bitmap.width, bitmap.height));
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.max(1, Math.round(bitmap.width * scale));
-  canvas.height = Math.max(1, Math.round(bitmap.height * scale));
-  canvas.getContext("2d")?.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-  bitmap.close();
-  return canvasToJpegBlob(canvas, 0.86);
+  try {
+    const scale = Math.min(1, normalizedImageMaxSide / Math.max(bitmap.width, bitmap.height));
+    const canvas = createProcessingCanvas(
+      Math.max(1, Math.round(bitmap.width * scale)),
+      Math.max(1, Math.round(bitmap.height * scale)),
+    );
+    const context = processingContext(canvas);
+    if (!context) throw new Error("当前浏览器不支持图片处理");
+    // JPEG has no alpha channel. Explicitly composite transparent uploads onto
+    // white; otherwise browsers commonly encode transparent pixels as black.
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    return await canvasToJpegBlob(canvas, 0.82);
+  } finally {
+    bitmap.close();
+  }
 }
 
-async function cropDetection(file: File, box: [number, number, number, number], category: string) {
-  const bitmap = await createImageBitmap(file);
+function detectionRectForSize(
+  width: number,
+  height: number,
+  box: [number, number, number, number],
+  category: string,
+): PixelRect {
   const [x1, y1, x2, y2] = box;
-  const rawX = x1 / 1000 * bitmap.width;
-  const rawY = y1 / 1000 * bitmap.height;
-  const rawW = Math.max(1, (x2 - x1) / 1000 * bitmap.width);
-  const rawH = Math.max(1, (y2 - y1) / 1000 * bitmap.height);
+  const rawX = x1 / 1000 * width;
+  const rawY = y1 / 1000 * height;
+  const rawW = Math.max(1, (x2 - x1) / 1000 * width);
+  const rawH = Math.max(1, (y2 - y1) / 1000 * height);
   const paddingRate = ["首饰", "其他配饰"].includes(category) ? 0.065 : 0.025;
   const padding = Math.max(rawW, rawH) * paddingRate;
   const sourceX = Math.max(0, Math.floor(rawX - padding));
   const sourceY = Math.max(0, Math.floor(rawY - padding));
-  const sourceW = Math.min(bitmap.width - sourceX, Math.ceil(rawW + padding * 2));
-  const sourceH = Math.min(bitmap.height - sourceY, Math.ceil(rawH + padding * 2));
-  const scale = Math.min(1, 1600 / Math.max(sourceW, sourceH));
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.max(1, Math.round(sourceW * scale));
-  canvas.height = Math.max(1, Math.round(sourceH * scale));
-  canvas.getContext("2d")?.drawImage(bitmap, sourceX, sourceY, sourceW, sourceH, 0, 0, canvas.width, canvas.height);
-  bitmap.close();
-  return canvasToJpegBlob(canvas, 0.9);
+  const sourceW = Math.min(width - sourceX, Math.ceil(rawW + padding * 2));
+  const sourceH = Math.min(height - sourceY, Math.ceil(rawH + padding * 2));
+  return { x: sourceX, y: sourceY, width: sourceW, height: sourceH };
 }
 
-async function analyzeGarments(file: File) {
+function detectionRect(bitmap: ImageBitmap, box: [number, number, number, number], category: string): PixelRect {
+  return detectionRectForSize(bitmap.width, bitmap.height, box, category);
+}
+
+async function cropDetection(
+  bitmap: ImageBitmap,
+  box: [number, number, number, number],
+  category: string,
+  options: { maxSide?: number; quality?: number } = {},
+) {
+  const source = detectionRect(bitmap, box, category);
+  const scale = Math.min(1, (options.maxSide || normalizedImageMaxSide) / Math.max(source.width, source.height));
+  const canvas = createProcessingCanvas(
+    Math.max(1, Math.round(source.width * scale)),
+    Math.max(1, Math.round(source.height * scale)),
+  );
+  processingContext(canvas)?.drawImage(bitmap, source.x, source.y, source.width, source.height, 0, 0, canvas.width, canvas.height);
+  return canvasToJpegBlob(canvas, options.quality ?? 0.9);
+}
+
+function foregroundBounds(bitmap: ImageBitmap, region: PixelRect = {
+  x: 0,
+  y: 0,
+  width: bitmap.width,
+  height: bitmap.height,
+}): (PixelRect & { foregroundRatio: number }) | null {
+  const canvas = createProcessingCanvas(region.width, region.height);
+  const context = processingContext(canvas, { willReadFrequently: true });
+  if (!context) return null;
+  context.drawImage(
+    bitmap,
+    region.x,
+    region.y,
+    region.width,
+    region.height,
+    0,
+    0,
+    canvas.width,
+    canvas.height,
+  );
+  const data = context.getImageData(0, 0, canvas.width, canvas.height).data;
+  let minX = canvas.width;
+  let minY = canvas.height;
+  let maxX = -1;
+  let maxY = -1;
+  let foreground = 0;
+  for (let position = 0; position < canvas.width * canvas.height; position++) {
+    const offset = position * 4;
+    const whiteDistance = 765 - data[offset] - data[offset + 1] - data[offset + 2];
+    if (whiteDistance <= 12) continue;
+    const x = position % canvas.width;
+    const y = Math.floor(position / canvas.width);
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x);
+    maxY = Math.max(maxY, y);
+    foreground += 1;
+  }
+  if (maxX < minX || maxY < minY || foreground < canvas.width * canvas.height * 0.0015) return null;
+  const padding = Math.round(Math.max(maxX - minX, maxY - minY) * 0.035);
+  const x = Math.max(0, minX - padding);
+  const y = Math.max(0, minY - padding);
+  return {
+    x: region.x + x,
+    y: region.y + y,
+    width: Math.min(canvas.width - x, maxX - minX + padding * 2 + 1),
+    height: Math.min(canvas.height - y, maxY - minY + padding * 2 + 1),
+    foregroundRatio: foreground / Math.max(1, canvas.width * canvas.height),
+  };
+}
+
+async function renderSegmentedProduct(bitmap: ImageBitmap, source: PixelRect, verifyForeground = true) {
+  const canvas = createProcessingCanvas(productCanvasSize, productCanvasSize);
+  const context = processingContext(canvas, { willReadFrequently: verifyForeground });
+  if (!context) throw new Error("当前浏览器不支持图片处理");
+  context.fillStyle = "#ffffff";
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = "high";
+  const available = productCanvasSize - productCanvasInset * 2;
+  const scale = Math.min(available / source.width, available / source.height);
+  const targetWidth = Math.max(1, Math.round(source.width * scale));
+  const targetHeight = Math.max(1, Math.round(source.height * scale));
+  const targetX = Math.round((productCanvasSize - targetWidth) / 2);
+  const targetY = Math.round((productCanvasSize - targetHeight) / 2);
+  context.drawImage(bitmap, source.x, source.y, source.width, source.height, targetX, targetY, targetWidth, targetHeight);
+
+  let foregroundRatio = 1;
+  if (verifyForeground) {
+    const pixels = context.getImageData(targetX, targetY, targetWidth, targetHeight).data;
+    let foregroundSamples = 0;
+    let samples = 0;
+    for (let offset = 0; offset < pixels.length; offset += 4 * 8) {
+      const whiteDistance = 765 - pixels[offset] - pixels[offset + 1] - pixels[offset + 2];
+      if (whiteDistance > 12) foregroundSamples += 1;
+      samples += 1;
+    }
+    foregroundRatio = samples ? foregroundSamples / samples : 0;
+    if (foregroundRatio < 0.004) return null;
+  }
+  return { blob: await canvasToJpegBlob(canvas, 0.92), foregroundRatio };
+}
+
+async function cropAtlasSegmentation(
+  bitmap: ImageBitmap,
+  metadata: AtlasMetadata,
+  atlasClass: AtlasClass,
+  box: [number, number, number, number],
+  category: string,
+) {
+  const panelIndex = metadata.classes.indexOf(atlasClass);
+  if (panelIndex < 0) return null;
+  const source = detectionRectForSize(metadata.sourceWidth, metadata.sourceHeight, box, category);
+  return renderSegmentedProduct(bitmap, {
+    ...source,
+    x: panelIndex * metadata.sourceWidth + source.x,
+  });
+}
+
+async function closeBitmapPromise(task: Promise<ImageBitmap | null> | null) {
+  if (!task) return;
+  try {
+    (await task)?.close();
+  } catch {
+    // Decoding failures are handled by the caller. Cleanup must never mask the
+    // original upload error.
+  }
+}
+
+async function analyzeGarments(image: Blob) {
   const form = new FormData();
-  form.append("image", await createAnalysisBlob(file), "wardrobe-analysis.jpg");
+  form.append("image", image, "wardrobe-analysis.jpg");
   const { data } = await requestJson<{ detections?: GarmentDetection[] }>("/api/wardrobe/analyze", {
     method: "POST",
     body: form,
-    timeoutMs: 180_000,
+    timeoutMs: 27_000,
   });
   if (!data.detections?.length) throw new Error("没有识别到单品");
   return data.detections;
 }
 
-async function productizeGarment(blob: Blob, category: string, color: string) {
+const foregroundProductizeWaiters: Array<() => void> = [];
+const backgroundProductizeWaiters: Array<() => void> = [];
+const reconstructionWaiters: Array<() => void> = [];
+let activeProductizeRequests = 0;
+let activeReconstructionRequests = 0;
+
+async function withProductizeSlot<T>(task: () => Promise<T>, priority: "foreground" | "background") {
+  if (activeProductizeRequests >= maxClientProductizeRequests) {
+    await new Promise<void>(resolve => {
+      (priority === "foreground" ? foregroundProductizeWaiters : backgroundProductizeWaiters).push(resolve);
+    });
+  } else {
+    activeProductizeRequests += 1;
+  }
+  try {
+    return await task();
+  } finally {
+    const next = foregroundProductizeWaiters.shift() || backgroundProductizeWaiters.shift();
+    if (next) next();
+    else activeProductizeRequests -= 1;
+  }
+}
+
+async function withReconstructionSlot<T>(task: () => Promise<T>) {
+  if (activeReconstructionRequests >= maxClientReconstructionRequests) {
+    await new Promise<void>(resolve => reconstructionWaiters.push(resolve));
+  } else {
+    activeReconstructionRequests += 1;
+  }
+  try {
+    return await task();
+  } finally {
+    const next = reconstructionWaiters.shift();
+    if (next) next();
+    else activeReconstructionRequests -= 1;
+  }
+}
+
+function startGarmentReconstruction(
+  sourceImage: Blob,
+  visibleImage: Blob | null,
+  category: string,
+  color: string,
+  description = "",
+): Promise<GarmentReconstructionOutcome> {
+  return withReconstructionSlot(async () => {
+    const form = new FormData();
+    form.append("sourceImage", sourceImage, "source.jpg");
+    if (visibleImage) form.append("visibleImage", visibleImage, "visible-garment.jpg");
+    form.append("category", category);
+    form.append("color", color);
+    if (description) form.append("description", description);
+    const { data, response } = await requestBlob("/api/wardrobe/reconstruct", {
+      method: "POST",
+      body: form,
+      timeoutMs: 120_000,
+    });
+    if (response.headers.get("X-Yida-Completeness") !== "pass") {
+      throw new Error("完整衣物商品图未通过质量检查");
+    }
+    return {
+      status: "ready" as const,
+      blob: data,
+      completeness: response.headers.get("X-Yida-Completeness") === "pass" ? "pass" as const : "review" as const,
+      model: response.headers.get("X-Layra-Model") || "国内图像编辑模型",
+    };
+  }).catch(error => ({
+    status: "failed" as const,
+    error: error instanceof Error ? error.message : "完整衣物商品图生成失败",
+  }));
+}
+
+async function productizeGarment(
+  blob: Blob,
+  category: string,
+  color: string,
+  recommendedApi: GarmentDetection["recommended_api"],
+  aiTags: GarmentAITags,
+  timeoutMs: number,
+  options: {
+    preserveGeometry?: boolean;
+    atlasClasses?: AtlasClass[];
+    combinedAtlas?: boolean;
+    partiallyOccluded?: boolean;
+    priority?: "foreground" | "background";
+  } = {},
+) {
   const form = new FormData();
   form.append("image", blob, "garment.jpg");
   form.append("category", category);
   form.append("color", color);
-  const { data, response } = await requestBlob("/api/wardrobe/productize", { method: "POST", body: form, timeoutMs: 200_000 });
+  form.append("recommendedApi", recommendedApi);
+  form.append("tags", JSON.stringify(aiTags));
+  if (options.preserveGeometry) form.append("preserveGeometry", "true");
+  if (options.atlasClasses?.length) form.append("atlasClasses", options.atlasClasses.join(","));
+  if (options.combinedAtlas) form.append("combinedAtlas", "true");
+  if (options.partiallyOccluded) form.append("partiallyOccluded", "true");
+  form.append("deadlineMs", String(Math.max(1_000, timeoutMs - 350)));
+  const { data, response } = await withProductizeSlot(
+    () => requestBlob("/api/wardrobe/productize", { method: "POST", body: form, timeoutMs }),
+    options.priority || "foreground",
+  );
+  const geometryHeader = response.headers.get("X-Yida-Geometry");
+  const atlasClasses = (response.headers.get("X-Yida-Atlas-Classes") || "")
+    .split(",")
+    .map(value => value.trim())
+    .filter((value): value is AtlasClass => value === "tops" || value === "pants");
+  const foregroundRatios = (response.headers.get("X-Yida-Atlas-Foreground-Ratios") || "")
+    .split(",")
+    .map(Number)
+    .filter(Number.isFinite);
+  const atlasBounds = (response.headers.get("X-Yida-Atlas-Foreground-Bounds") || "")
+    .split(";")
+    .map(value => value.split(",").map(Number))
+    .filter((value): value is [number, number, number, number] => value.length === 4 && value.every(Number.isFinite))
+    .map(([x, y, width, height]) => ({ x, y, width, height }));
+  const sourceWidth = Number(response.headers.get("X-Yida-Source-Width"));
+  const sourceHeight = Number(response.headers.get("X-Yida-Source-Height"));
+  const atlas = geometryHeader === "atlas"
+    && atlasClasses.length > 0
+    && Number.isInteger(sourceWidth)
+    && sourceWidth > 0
+    && Number.isInteger(sourceHeight)
+    && sourceHeight > 0
+    ? { classes: atlasClasses, foregroundRatios, foregroundBounds: atlasBounds, sourceWidth, sourceHeight } satisfies AtlasMetadata
+    : null;
   return {
     blob: data,
     quality: response.headers.get("X-Yida-Quality") === "good" ? "good" as const : "review" as const,
     aiTags: decodeGarmentTags(response.headers.get("X-Yida-Tags"), { category, color }),
+    geometry: geometryHeader === "atlas" ? "atlas" as const : geometryHeader === "source" ? "source" as const : "square-1024" as const,
+    atlas,
+    provider: response.headers.get("X-Layra-Provider") === "comfyui-birefnet"
+      ? "comfyui-birefnet" as const
+      : "aliyun-viapi" as const,
   };
 }
 
@@ -191,46 +530,394 @@ function deduplicateBeforeGeneration(detections: GarmentDetection[]) {
     });
 }
 
-export async function processGarmentUpload(file: File): Promise<ProcessedGarmentImage[]> {
+async function reviewDraftsFromAtlas(
+  atlasResult: Awaited<ReturnType<typeof productizeGarment>> | null,
+  normalizedBlob: Blob,
+  sourceKey = "atlas",
+  onlyClasses?: AtlasClass[],
+) {
+  if (!atlasResult?.atlas || atlasResult.geometry !== "atlas") return [];
+  let bitmap: ImageBitmap | null = null;
+  try {
+    bitmap = await createImageBitmap(atlasResult.blob);
+    const metadata = atlasResult.atlas;
+    if (
+      bitmap.width !== metadata.sourceWidth * metadata.classes.length
+      || bitmap.height !== metadata.sourceHeight
+    ) return [];
+    const atlasBitmap = bitmap;
+    const candidates = await Promise.all(metadata.classes.map(async (atlasClass, index): Promise<ProcessedGarmentImage | null> => {
+      if (onlyClasses && !onlyClasses.includes(atlasClass)) return null;
+      const serverRatio = metadata.foregroundRatios[index] || 0;
+      if (serverRatio < 0.0015) return null;
+      const panel = {
+        x: index * metadata.sourceWidth,
+        y: 0,
+        width: metadata.sourceWidth,
+        height: metadata.sourceHeight,
+      };
+      const serverBounds = metadata.foregroundBounds[index];
+      const padding = serverBounds
+        ? Math.round(Math.max(serverBounds.width, serverBounds.height) * 0.035)
+        : 0;
+      const bounds = serverBounds?.width > 0 && serverBounds.height > 0
+        ? {
+          x: panel.x + Math.max(0, serverBounds.x - padding),
+          y: Math.max(0, serverBounds.y - padding),
+          width: Math.min(metadata.sourceWidth - Math.max(0, serverBounds.x - padding), serverBounds.width + padding * 2),
+          height: Math.min(metadata.sourceHeight - Math.max(0, serverBounds.y - padding), serverBounds.height + padding * 2),
+        }
+        : foregroundBounds(atlasBitmap, panel);
+      if (!bounds) return null;
+      const sourceCategory = atlasClass === "tops" ? "上衣" : "裤子";
+      const rendered = await renderSegmentedProduct(atlasBitmap, bounds, false);
+      if (!rendered) return null;
+      const reconstructionTask = startGarmentReconstruction(normalizedBlob, rendered.blob, sourceCategory, "");
+      const category = displayCategory(sourceCategory);
+      const aiTags = normalizeGarmentAITags(null, {
+        category: sourceCategory,
+        color: "未识别",
+        season: "四季",
+        style: "简约",
+      });
+      const reconstructionReasons = ["单品标签识别未完成，需将可见衣物补全为完整商品图"];
+      return {
+        draftKey: `${sourceKey}:atlas:${atlasClass}`,
+        blob: rendered.blob,
+        previewUrl: URL.createObjectURL(rendered.blob),
+        originalUrl: URL.createObjectURL(normalizedBlob),
+        category,
+        colorName: "未识别",
+        colorHex: "#999999",
+        season: "四季",
+        style: "简约",
+        name: `待确认${sourceCategory}`,
+        cutoutQuality: "review",
+        aiTags,
+        completionStatus: "generating",
+        productOrigin: "segmentation",
+        reconstructionReasons,
+        depictionType: "unknown",
+        visibleRatio: Math.min(1, Math.max(0, serverRatio)),
+        partiallyOccluded: true,
+        // A partial segmentation can make an image-edit model copy detached
+        // fragments. Category + original photo is both faster and more faithful.
+        reconstructionTask,
+      };
+    }));
+    return candidates.filter((draft): draft is ProcessedGarmentImage => draft !== null);
+  } catch {
+    return [];
+  } finally {
+    bitmap?.close();
+  }
+}
+
+function failedDetectionDraft(
+  normalizedBlob: Blob,
+  detection: GarmentDetection,
+  draftKey: string,
+  reason = "该单品局部图片处理失败，请换一张更清晰的照片重试",
+): ProcessedGarmentImage {
+  const category = displayCategory(detection.category);
+  const color = colorForName(detection.color);
+  const depictionType = detection.depiction_type || "unknown";
+  const visibleRatio = Number.isFinite(detection.visible_ratio) ? detection.visible_ratio! : 0;
+  return {
+    draftKey,
+    blob: normalizedBlob,
+    previewUrl: URL.createObjectURL(normalizedBlob),
+    originalUrl: URL.createObjectURL(normalizedBlob),
+    category,
+    colorName: color.name,
+    colorHex: color.hex,
+    season: "四季",
+    style: "简约",
+    name: `${color.name}${detection.category}处理失败`,
+    cutoutQuality: "failed",
+    aiTags: normalizeGarmentAITags(null, { category: detection.category, color: detection.color, season: "四季", style: "简约" }),
+    completionStatus: "failed",
+    productOrigin: "source-preview",
+    reconstructionReasons: [reason],
+    depictionType,
+    visibleRatio,
+    partiallyOccluded: detection.partially_occluded,
+  };
+}
+
+function quickFailedDraft(normalizedBlob: Blob, sourceKey = "failed"): ProcessedGarmentImage {
+  return {
+    draftKey: `${sourceKey}:unresolved`,
+    blob: normalizedBlob,
+    previewUrl: URL.createObjectURL(normalizedBlob),
+    originalUrl: URL.createObjectURL(normalizedBlob),
+    category: "待识别",
+    colorName: "未识别",
+    colorHex: "#999999",
+    season: "四季",
+    style: "简约",
+    name: "整套穿搭识别不完整",
+    cutoutQuality: "failed",
+    aiTags: normalizeGarmentAITags(null, { category: "服饰", color: "未识别", season: "四季", style: "简约" }),
+    completionStatus: "failed",
+    productOrigin: "source-preview",
+    reconstructionReasons: ["未能完整识别这张照片中的衣服、鞋帽、包和配饰，请换清晰全身照重试"],
+    depictionType: "unknown",
+    visibleRatio: 0,
+    partiallyOccluded: true,
+  };
+}
+
+export async function processGarmentUpload(
+  file: File,
+  options: {
+    combinedAtlas?: boolean;
+    sourceKey?: string;
+    onPreview?: (items: ProcessedGarmentImage[]) => void;
+  } = {},
+): Promise<ProcessedGarmentImage[]> {
+  const sourceKey = options.sourceKey || `upload:${file.name}:${file.lastModified}`;
+  const processingDeadline = performance.now() + uploadProcessingBudgetMs;
+  const normalizedBlob = await createNormalizedBlob(file);
+  const wholeTags = normalizeGarmentAITags(null, { category: "服饰", color: "未识别", season: "四季", style: "简约" });
+
+  // Detection and the fast top/pants atlas share the normalized source. The
+  // atlas remains an optimization for clean product photos; full-outfit
+  // coverage comes from the two complementary Qwen detection passes.
+  const detectionsPromise = analyzeGarments(normalizedBlob);
+  const atlasSegmentationPromise = productizeGarment(
+    normalizedBlob,
+    "服饰整图",
+    "",
+    "SegmentCloth",
+    wholeTags,
+    7_800,
+    { atlasClasses: ["tops", "pants"], combinedAtlas: options.combinedAtlas, priority: "background" },
+  ).catch(() => null);
+
   let detections: GarmentDetection[];
   try {
-    detections = await analyzeGarments(file);
+    detections = await detectionsPromise;
   } catch {
-    const fallback = await processGarmentImage(file);
-    return [{ ...fallback, cutoutQuality: "failed" }];
+    // A two-class mask is not proof that the whole outfit was found. Fail
+    // closed instead of silently presenting only a top while dropping shoes,
+    // hats and bags.
+    const failed = quickFailedDraft(normalizedBlob, sourceKey);
+    options.onPreview?.([failed]);
+    return [failed];
   }
 
   const uniqueDetections = deduplicateBeforeGeneration(detections);
-  const results = await mapWithConcurrency(uniqueDetections, 2, async detection => {
-    const sourceBlob = await cropDetection(file, detection.bbox_2d, detection.category);
-    const category = displayCategory(detection.category);
-    const color = colorForName(detection.color);
-    let blob = sourceBlob;
-    let cutoutQuality: ProcessedGarmentImage["cutoutQuality"] = "failed";
-    let aiTags = normalizeGarmentAITags(null, { category: detection.category, color: detection.color, season: "四季", style: "简约" });
-    try {
-      const generated = await productizeGarment(sourceBlob, detection.category, detection.color);
-      blob = generated.blob;
-      cutoutQuality = generated.quality;
-      aiTags = generated.aiTags;
-    } catch {
-      // Keep the source crop only as a diagnostic preview. Failed items are not selected for saving.
+  if (!uniqueDetections.length) {
+    const failed = quickFailedDraft(normalizedBlob, sourceKey);
+    options.onPreview?.([failed]);
+    return [failed];
+  }
+  const sourceBitmap = await createImageBitmap(normalizedBlob);
+  let atlasBitmapPromise: Promise<ImageBitmap | null> | null = null;
+  let atlasMetadata: AtlasMetadata | null = null;
+  const getAtlasBitmap = () => {
+    if (!atlasBitmapPromise) {
+      atlasBitmapPromise = atlasSegmentationPromise.then(async result => {
+        if (!result?.atlas || result.geometry !== "atlas") return null;
+        const bitmap = await createImageBitmap(result.blob);
+        if (
+          result.atlas.sourceWidth !== sourceBitmap.width
+          || result.atlas.sourceHeight !== sourceBitmap.height
+          || bitmap.width !== result.atlas.sourceWidth * result.atlas.classes.length
+          || bitmap.height !== result.atlas.sourceHeight
+        ) {
+          bitmap.close();
+          return null;
+        }
+        atlasMetadata = result.atlas;
+        return bitmap;
+      }).catch(() => null);
     }
-    return {
-      blob,
-      previewUrl: URL.createObjectURL(blob),
-      originalUrl: URL.createObjectURL(sourceBlob),
-      category,
-      colorName: color.name,
-      colorHex: color.hex,
-      season: "四季",
-      style: "简约",
-      name: `${color.name}${detection.category}`,
-      cutoutQuality,
-      aiTags,
-    } satisfies ProcessedGarmentImage;
-  });
-  return results.length ? results : [await processGarmentImage(file)];
+    return atlasBitmapPromise;
+  };
+  try {
+    const discovered = await mapWithConcurrency(uniqueDetections, 6, async (detection, index) => {
+      const draftKey = `${sourceKey}:item:${detection.id || index + 1}:${index}`;
+      const category = displayCategory(detection.category);
+      const color = colorForName(detection.color);
+      const depictionType = detection.depiction_type || "unknown";
+      const visibleRatio = Number.isFinite(detection.visible_ratio) ? detection.visible_ratio! : 0.7;
+      const reconstructionEvidence = {
+        category: detection.category,
+        bbox: detection.bbox_2d,
+        depictionType,
+        partiallyOccluded: detection.partially_occluded,
+        visibleRatio,
+      };
+      const reconstructionReasons = garmentReconstructionReasons(reconstructionEvidence);
+      const needsReconstruction = requiresGarmentReconstruction(reconstructionEvidence);
+      try {
+        // Keep a detailed target crop for reconstruction, but publish only a
+        // lightweight crop. CSS intentionally softens it until the white-background
+        // product image replaces the same stable draftKey.
+        const [sourceBlob, previewBlob] = await Promise.all([
+          cropDetection(sourceBitmap, detection.bbox_2d, detection.category, { maxSide: 1_024, quality: 0.9 }),
+          cropDetection(sourceBitmap, detection.bbox_2d, detection.category, { maxSide: 420, quality: 0.68 }),
+        ]);
+        const aiTags = normalizeGarmentAITags(detection.tags, { category: detection.category, color: detection.color, season: "四季", style: "简约" });
+        const reconstructionTask = needsReconstruction
+          ? startGarmentReconstruction(
+            normalizedBlob,
+            sourceBlob,
+            detection.category,
+            detection.color,
+            detection.garment_description,
+          )
+          : undefined;
+        const draft: ProcessedGarmentImage = {
+          draftKey,
+          blob: previewBlob,
+          previewUrl: URL.createObjectURL(previewBlob),
+          originalUrl: URL.createObjectURL(normalizedBlob),
+          category,
+          colorName: color.name,
+          colorHex: color.hex,
+          season: "四季",
+          style: "简约",
+          name: `${color.name}${detection.category}`,
+          cutoutQuality: "review",
+          aiTags,
+          completionStatus: "generating",
+          productOrigin: "source-preview",
+          reconstructionReasons,
+          depictionType,
+          visibleRatio,
+          partiallyOccluded: detection.partially_occluded,
+          reconstructionTask,
+        };
+        return { detection, draft, sourceBlob, needsReconstruction, preprocessingFailed: false };
+      } catch {
+        return {
+          detection,
+          draft: failedDetectionDraft(normalizedBlob, detection, draftKey),
+          sourceBlob: null,
+          needsReconstruction: false,
+          preprocessingFailed: true,
+        };
+      }
+    });
+
+    // Recognition now has a visible result before any remote segmentation or
+    // image-generation task finishes. Do not expose the promise on this first
+    // callback; the caller registers each job exactly once from the final return.
+    options.onPreview?.(discovered.map(({ draft }) => ({ ...draft, reconstructionTask: undefined })));
+
+    const detectedAtlasClasses = new Set<AtlasClass>();
+    for (const { detection, preprocessingFailed } of discovered) {
+      if (preprocessingFailed) continue;
+      if (["上衣", "外套", "连衣裙"].includes(detection.category)) detectedAtlasClasses.add("tops");
+      if (["裤子", "裙子", "连衣裙"].includes(detection.category)) detectedAtlasClasses.add("pants");
+    }
+    const missingAtlasClasses = (["tops", "pants"] as AtlasClass[]).filter(atlasClass => !detectedAtlasClasses.has(atlasClass));
+    const supplementalDraftsPromise = missingAtlasClasses.length
+      ? atlasSegmentationPromise.then(result => reviewDraftsFromAtlas(result, normalizedBlob, sourceKey, missingAtlasClasses)).then(drafts => {
+        if (drafts.length) options.onPreview?.(drafts.map(draft => ({ ...draft, reconstructionTask: undefined })));
+        return drafts;
+      })
+      : Promise.resolve([] as ProcessedGarmentImage[]);
+
+    const refinedDraftsPromise = mapWithConcurrency(discovered, 4, async ({ detection, draft, sourceBlob, needsReconstruction, preprocessingFailed }) => {
+      if (preprocessingFailed || !sourceBlob || needsReconstruction) return draft;
+
+      try {
+        let blob = sourceBlob;
+        let cutoutQuality: ProcessedGarmentImage["cutoutQuality"] = "failed";
+        let aiTags = draft.aiTags;
+        let cutoutProvider: ProcessedGarmentImage["cutoutProvider"];
+        let usedAtlasSegmentation = false;
+        const atlasClass = atlasClassByCategory.get(detection.category);
+
+        if (atlasClass) {
+          const atlasBitmap = await getAtlasBitmap();
+          if (atlasBitmap && atlasMetadata) {
+            const generated = await cropAtlasSegmentation(
+              atlasBitmap,
+              atlasMetadata,
+              atlasClass,
+              detection.bbox_2d,
+              detection.category,
+            );
+            if (generated) {
+              blob = generated.blob;
+              const panelIndex = atlasMetadata.classes.indexOf(atlasClass);
+              const panelRatio = atlasMetadata.foregroundRatios[panelIndex] || 0;
+              const strongForeground = generated.foregroundRatio >= 0.018 && panelRatio >= 0.002;
+              cutoutQuality = detection.partially_occluded || !strongForeground ? "review" : "good";
+              cutoutProvider = (await atlasSegmentationPromise)?.provider;
+              usedAtlasSegmentation = true;
+            }
+          }
+        }
+
+        if (!usedAtlasSegmentation) {
+          const fallbackBudget = Math.floor(processingDeadline - performance.now());
+          if (fallbackBudget >= minimumFallbackBudgetMs) {
+            try {
+              const generated = await productizeGarment(
+                sourceBlob,
+                detection.category,
+                detection.color,
+                detection.recommended_api,
+                aiTags,
+                Math.min(5_500, fallbackBudget),
+                { partiallyOccluded: detection.partially_occluded },
+              );
+              blob = generated.blob;
+              cutoutQuality = generated.quality;
+              aiTags = generated.aiTags;
+              cutoutProvider = generated.provider;
+            } catch {
+              // 保留原始裁剪图供用户诊断，不会把不可靠的本地抠图自动加入衣柜。
+            }
+          }
+        }
+
+        if (cutoutQuality === "failed") {
+          return {
+            ...draft,
+            blob: sourceBlob,
+            cutoutQuality: "failed" as const,
+            completionStatus: "failed" as const,
+            reconstructionReasons: ["没有生成可靠的完整白底商品图，请换清晰照片重试"],
+            reconstructionTask: undefined,
+          };
+        }
+
+        return {
+          ...draft,
+          blob,
+          previewUrl: URL.createObjectURL(blob),
+          cutoutQuality,
+          aiTags,
+          completionStatus: "not-needed" as const,
+          productOrigin: "segmentation" as const,
+          cutoutProvider,
+          reconstructionTask: undefined,
+        } satisfies ProcessedGarmentImage;
+      } catch {
+        return {
+          ...draft,
+          blob: sourceBlob,
+          cutoutQuality: "failed" as const,
+          completionStatus: "failed" as const,
+          reconstructionReasons: ["该单品高清图预处理失败，请换清晰照片重试"],
+          reconstructionTask: undefined,
+        };
+      }
+    });
+    const [results, supplementalDrafts] = await Promise.all([refinedDraftsPromise, supplementalDraftsPromise]);
+    const completeSet = [...results, ...supplementalDrafts];
+    return completeSet.length ? completeSet : [quickFailedDraft(normalizedBlob, sourceKey)];
+  } finally {
+    sourceBitmap.close();
+    await closeBitmapPromise(atlasBitmapPromise);
+  }
 }
 
 async function mapWithConcurrency<T, R>(items: T[], limit: number, mapper: (item: T, index: number) => Promise<R>) {
@@ -242,7 +929,10 @@ async function mapWithConcurrency<T, R>(items: T[], limit: number, mapper: (item
       results[index] = await mapper(items[index], index);
     }
   }
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => worker()));
+  const workers = Array.from({ length: Math.min(limit, items.length) }, () => worker());
+  const outcomes = await Promise.allSettled(workers);
+  const rejected = outcomes.find((outcome): outcome is PromiseRejectedResult => outcome.status === "rejected");
+  if (rejected) throw rejected.reason;
   return results;
 }
 
@@ -256,9 +946,15 @@ export async function processGarmentImage(file: File): Promise<ProcessedGarmentI
   canvas.width = width;
   canvas.height = height;
   const context = canvas.getContext("2d", { willReadFrequently: true });
-  if (!context) throw new Error("当前浏览器不支持图片处理");
-  context.drawImage(bitmap, 0, 0, width, height);
-  bitmap.close();
+  if (!context) {
+    bitmap.close();
+    throw new Error("当前浏览器不支持图片处理");
+  }
+  try {
+    context.drawImage(bitmap, 0, 0, width, height);
+  } finally {
+    bitmap.close();
+  }
 
   const image = context.getImageData(0, 0, width, height);
   const data = image.data;
@@ -330,7 +1026,8 @@ export async function processGarmentImage(file: File): Promise<ProcessedGarmentI
   const removedRatio = removed / (width * height);
   const hasSubject = maxX > minX && maxY > minY && removedRatio > 0.03 && removedRatio < 0.92;
   if (!hasSubject) {
-    context.drawImage(await createImageBitmap(file), 0, 0, width, height);
+    // canvas 仍保留最初 drawImage 的像素；ImageData 只在内存中被修改，
+    // 因此无需再次解码图片，也避免遗漏第二个 ImageBitmap。
     minX = 0; minY = 0; maxX = width - 1; maxY = height - 1;
   } else {
     context.putImageData(image, 0, 0);
@@ -348,8 +1045,16 @@ export async function processGarmentImage(file: File): Promise<ProcessedGarmentI
   const blob = await canvasToBlob(output);
   const dominant = nearestColor(colorSamples ? { r: colorR / colorSamples, g: colorG / colorSamples, b: colorB / colorSamples } : { r: 120, g: 120, b: 120 });
   const category = inferCategory(file.name, cropW, cropH);
+  const reconstructionReasons = garmentReconstructionReasons({
+    category,
+    bbox: [0, 0, 1000, 1000],
+    depictionType: "unknown",
+    partiallyOccluded: !hasSubject,
+    visibleRatio: hasSubject ? 0.75 : 0.5,
+  });
 
   return {
+    draftKey: `legacy:${file.name}:${file.lastModified}`,
     blob,
     previewUrl: URL.createObjectURL(blob),
     originalUrl: URL.createObjectURL(file),
@@ -361,5 +1066,12 @@ export async function processGarmentImage(file: File): Promise<ProcessedGarmentI
     name: `${dominant.name}${category}`,
     cutoutQuality: hasSubject ? "good" : "review",
     aiTags: normalizeGarmentAITags(null, { category, color: dominant.name, season: "四季", style: "简约" }),
+    completionStatus: "generating",
+    productOrigin: "segmentation",
+    reconstructionReasons,
+    depictionType: "unknown",
+    visibleRatio: hasSubject ? 0.75 : 0.5,
+    partiallyOccluded: !hasSubject,
+    reconstructionTask: startGarmentReconstruction(file, hasSubject ? blob : null, category, dominant.name),
   };
 }

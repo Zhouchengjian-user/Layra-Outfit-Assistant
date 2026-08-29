@@ -16,12 +16,14 @@
     "migration:prepare": "node scripts/prepare-production-migration.mjs"
   },
   "dependencies": {
+    "@alicloud/imageseg20191230": "^4.0.1",
     "@aws-sdk/client-s3": "3.1115.0",
     "@sentry/nextjs": "10.70.0",
     "mysql2": "3.15.3",
     "next": "^16.3.1",
     "react": "19.2.6",
-    "react-dom": "19.2.6"
+    "react-dom": "19.2.6",
+    "sharp": "^0.35.4"
   },
   "devDependencies": {
     "@eslint/js": "9.39.4",

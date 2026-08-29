@@ -100,6 +100,115 @@ export async function buildOutfitReferenceBoard(items: OutfitItem[]) {
   });
 }
 
+async function loadPreviewBitmap(url: string, label: string) {
+  const response = await fetch(url, { credentials: "same-origin", cache: "no-store" });
+  if (!response.ok) throw new Error(`无法读取${label}`);
+  return createImageBitmap(await response.blob());
+}
+
+function drawContainedImage(
+  context: CanvasRenderingContext2D,
+  bitmap: ImageBitmap,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  padding = 0,
+) {
+  const availableWidth = Math.max(1, width - padding * 2);
+  const availableHeight = Math.max(1, height - padding * 2);
+  const scale = Math.min(availableWidth / bitmap.width, availableHeight / bitmap.height);
+  const drawWidth = bitmap.width * scale;
+  const drawHeight = bitmap.height * scale;
+  context.drawImage(
+    bitmap,
+    x + (width - drawWidth) / 2,
+    y + (height - drawHeight) / 2,
+    drawWidth,
+    drawHeight,
+  );
+}
+
+/**
+ * Builds an immediate, honest look-board while the slower AI try-on is running.
+ * It intentionally keeps the profile photo and wardrobe products separate rather
+ * than pretending a local collage is a generated try-on result.
+ */
+export async function buildTryOnQuickPreview(profileImageUrl: string, items: OutfitItem[], title: string) {
+  if (!profileImageUrl || !items.length) throw new Error("缺少搭配速览所需的照片");
+
+  const canvas = document.createElement("canvas");
+  canvas.width = 1080;
+  canvas.height = 1350;
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("浏览器无法生成搭配速览，请刷新后重试");
+
+  const [profileBitmap, ...itemBitmaps] = await Promise.all([
+    loadPreviewBitmap(profileImageUrl, "个人全身照"),
+    ...items.map(item => loadPreviewBitmap(item.imageUrl, `衣柜单品：${item.name}`)),
+  ]);
+
+  try {
+    const profileX = 44;
+    const profileY = 132;
+    const profileWidth = 650;
+    const profileHeight = 1174;
+    const railX = 718;
+    const railWidth = 318;
+    const gap = 14;
+    const tileHeight = Math.min(250, (profileHeight - gap * (itemBitmaps.length - 1)) / itemBitmaps.length);
+    const railHeight = tileHeight * itemBitmaps.length + gap * (itemBitmaps.length - 1);
+    const railY = profileY + Math.max(0, (profileHeight - railHeight) / 2);
+
+    const gradient = context.createLinearGradient(0, 0, canvas.width, canvas.height);
+    gradient.addColorStop(0, "#f4f1ef");
+    gradient.addColorStop(0.58, "#e9f0ee");
+    gradient.addColorStop(1, "#f2e7ea");
+    context.fillStyle = gradient;
+    context.fillRect(0, 0, canvas.width, canvas.height);
+
+    context.fillStyle = "#9b3f5f";
+    context.font = "700 22px -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif";
+    context.textBaseline = "middle";
+    context.fillText("LAYRA · 搭配速览", 48, 52);
+    context.fillStyle = "#251f21";
+    context.font = "650 35px 'Songti SC', 'STSong', serif";
+    context.fillText(title.slice(0, 20), 48, 94, 980);
+
+    context.fillStyle = "rgba(255,255,255,.82)";
+    context.beginPath();
+    context.roundRect(profileX, profileY, profileWidth, profileHeight, 34);
+    context.fill();
+    context.save();
+    context.beginPath();
+    context.roundRect(profileX, profileY, profileWidth, profileHeight, 34);
+    context.clip();
+    drawContainedImage(context, profileBitmap, profileX, profileY, profileWidth, profileHeight, 20);
+    context.restore();
+
+    itemBitmaps.forEach((bitmap, index) => {
+      const item = items[index];
+      const y = railY + index * (tileHeight + gap);
+      context.fillStyle = "rgba(255,255,255,.9)";
+      context.beginPath();
+      context.roundRect(railX, y, railWidth, tileHeight, 25);
+      context.fill();
+      drawContainedImage(context, bitmap, railX, y, railWidth, tileHeight - 36, 13);
+      context.fillStyle = "rgba(37,31,33,.78)";
+      context.font = "600 17px -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif";
+      context.textAlign = "center";
+      context.fillText(`${item.category} · ${item.name}`.slice(0, 18), railX + railWidth / 2, y + tileHeight - 18, railWidth - 24);
+    });
+  } finally {
+    profileBitmap.close();
+    itemBitmaps.forEach(bitmap => bitmap.close());
+  }
+
+  return new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error("搭配速览生成失败，请重试")), "image/jpeg", 0.9);
+  });
+}
+
 export async function pollRecommendationTask(taskId: string, signal?: AbortSignal) {
   for (let attempt = 0; attempt < 90; attempt++) {
     const { data } = await requestJson<RecommendationPayload>(`/api/outfits/recommend?taskId=${encodeURIComponent(taskId)}`, { timeoutMs: 20_000, signal });

@@ -3,6 +3,8 @@
  * 图片由服务端用 qwen-image-2.0 生成真实白底商品图并缓存，前端只负责触发与展示。
  */
 
+import { STARTER_WARDROBE_SIZE_PER_GENDER } from "./starter-wardrobe-config";
+
 export type StarterCategory = "上衣" | "外套" | "下装" | "连衣裙" | "鞋履" | "配饰" | "帽子";
 
 export type StarterGarment = {
@@ -58,12 +60,12 @@ function garment(
   style: string,
   overrides: Partial<Record<string, unknown>>,
 ): StarterGarment {
-  const drawPrompt = `${category} · ${colorName} · ${name}`;
+  const drawPrompt = `独立单件${name}，品类为${category}，主色为${colorName}，正面完整展开，不含人物，不含其他衣物或配饰`;
   return { id, gender, name, category, colorName, colorHex, season, style, drawPrompt, aiTags: { ...tagBase, ...overrides } };
 }
 
 export const starterGarments: StarterGarment[] = [
-  // ---------- 女生 12 件 ----------
+  // ---------- 女生 16 件 ----------
   garment("female", "female-top-knit", "奶油白针织衫", "上衣", "米色", "#E8DFC8", "春秋", "简约", {
     subcategory: "针织衫", material: "针织", colorTone: "奶油白", colorFamily: "米色", colorTemperature: "暖色", lightness: "高", layer: "内搭", warmth: 3, formality: 3, styles: ["简约", "松弛感"], occasions: ["通勤", "休闲", "约会"], seasons: ["春秋"], weather: ["晴天"],
   }),
@@ -100,8 +102,20 @@ export const starterGarments: StarterGarment[] = [
   garment("female", "female-hat-beret", "黑色贝雷帽", "帽子", "黑色", "#2E2E2E", "秋冬", "文艺", {
     subcategory: "贝雷帽", material: "羊毛", colorTone: "黑色", colorFamily: "黑色", length: "短", layer: "配饰", statementLevel: 2, warmth: 2, formality: 2, styles: ["文艺", "轻复古"], occasions: ["约会", "休闲"], seasons: ["秋冬"], weather: ["晴天", "多云"],
   }),
+  garment("female", "female-top-striped-tee", "海军蓝条纹短袖T恤", "上衣", "蓝白色", "#52677E", "春夏", "休闲", {
+    subcategory: "T恤", material: "精梳棉", pattern: "条纹", patternScale: "中", colorTone: "海军蓝与米白条纹", colorFamily: "蓝色", colorTemperature: "冷色", lightness: "中", saturation: "低", fit: "合身", length: "常规", layer: "内搭", silhouette: "直筒", visualWeight: "轻", statementLevel: 2, role: "基础款", layering: ["单穿", "内搭"], warmth: 1, formality: 2, styles: ["休闲", "简约", "学院"], occasions: ["休闲", "通勤", "旅行"], seasons: ["春季", "夏季"], weather: ["晴天", "多云"],
+  }),
+  garment("female", "female-outer-denim", "中蓝短款牛仔外套", "外套", "蓝色", "#617994", "春秋", "休闲", {
+    subcategory: "牛仔外套", material: "牛仔", pattern: "纯色", colorTone: "中蓝", colorFamily: "蓝色", colorTemperature: "冷色", lightness: "中", saturation: "中", fit: "稍宽松", length: "短款", layer: "外层", silhouette: "H型", visualWeight: "中等", statementLevel: 3, role: "风格款", layering: ["外搭", "叠穿"], warmth: 3, formality: 2, styles: ["休闲", "简约", "轻复古"], occasions: ["休闲", "约会", "旅行"], seasons: ["春季", "秋季"], weather: ["晴天", "多云"],
+  }),
+  garment("female", "female-shoes-white-sneaker", "纯白低帮运动鞋", "鞋履", "白色", "#F3F2EE", "四季", "休闲", {
+    subcategory: "运动鞋", material: "皮革与织物", pattern: "纯色", colorTone: "纯白", colorFamily: "白色", colorTemperature: "中性", lightness: "高", saturation: "低", fit: "常规", length: "低帮", layer: "鞋履", silhouette: "低帮", visualWeight: "轻", statementLevel: 1, role: "基础款", layering: [], warmth: 2, formality: 1, styles: ["休闲", "运动", "简约"], occasions: ["休闲", "运动", "旅行", "通勤"], seasons: ["春季", "夏季", "秋季", "冬季"], weather: ["晴天", "多云"],
+  }),
+  garment("female", "female-bag-brown-tote", "深棕软皮托特包", "配饰", "棕色", "#674936", "四季", "通勤", {
+    subcategory: "托特包", material: "软皮革", pattern: "纯色", colorTone: "深棕", colorFamily: "棕色", colorTemperature: "暖色", lightness: "低", saturation: "低", fit: "常规", length: "中", layer: "配饰", silhouette: "方形", visualWeight: "中等", statementLevel: 2, role: "基础款", layering: [], warmth: 1, formality: 3, styles: ["通勤", "简约", "松弛感"], occasions: ["通勤", "休闲", "旅行"], seasons: ["春季", "夏季", "秋季", "冬季"], weather: ["晴天", "多云"],
+  }),
 
-  // ---------- 男生 12 件 ----------
+  // ---------- 男生 16 件 ----------
   garment("male", "male-top-tshirt", "白色圆领T恤", "上衣", "白色", "#F2F1EE", "四季", "休闲", {
     subcategory: "T恤", material: "棉", colorTone: "白色", colorFamily: "白色", lightness: "高", layer: "内搭", warmth: 2, formality: 2, styles: ["休闲", "简约"], occasions: ["休闲", "运动", "旅行"], seasons: ["四季"], weather: ["晴天"],
   }),
@@ -138,7 +152,31 @@ export const starterGarments: StarterGarment[] = [
   garment("male", "male-hat-cap", "藏青棒球帽", "帽子", "藏青色", "#3A4661", "四季", "休闲", {
     subcategory: "棒球帽", material: "棉", colorTone: "藏青", colorFamily: "蓝色", colorTemperature: "冷色", length: "短", layer: "配饰", statementLevel: 2, warmth: 2, formality: 1, styles: ["休闲", "运动"], occasions: ["休闲", "旅行", "运动"], seasons: ["四季"], weather: ["晴天"],
   }),
+  garment("male", "male-top-knit-polo", "墨绿色细针织Polo衫", "上衣", "绿色", "#465449", "春秋", "通勤", {
+    subcategory: "Polo衫", material: "细针织", pattern: "纯色", colorTone: "墨绿", colorFamily: "绿色", colorTemperature: "冷色", lightness: "低", saturation: "低", fit: "合身", length: "常规", layer: "内搭", silhouette: "直筒", visualWeight: "中等", statementLevel: 2, role: "基础款", layering: ["单穿", "内搭"], warmth: 3, formality: 3, styles: ["通勤", "简约", "轻复古"], occasions: ["通勤", "约会", "休闲"], seasons: ["春季", "秋季"], weather: ["晴天", "多云"],
+  }),
+  garment("male", "male-outer-light-trench", "雾灰色轻薄风衣", "外套", "灰色", "#858783", "春秋", "通勤", {
+    subcategory: "风衣", material: "轻薄防风面料", pattern: "纯色", colorTone: "雾灰", colorFamily: "灰色", colorTemperature: "中性", lightness: "中", saturation: "低", fit: "宽松", length: "中长", layer: "外层", silhouette: "H型", visualWeight: "轻", statementLevel: 2, role: "基础款", layering: ["外搭", "叠穿"], warmth: 2, formality: 3, styles: ["通勤", "简约", "城市户外"], occasions: ["通勤", "休闲", "旅行"], seasons: ["春季", "秋季"], weather: ["多云", "有小雨"],
+  }),
+  garment("male", "male-bag-brown-messenger", "深棕皮革邮差包", "配饰", "棕色", "#4D3529", "四季", "通勤", {
+    subcategory: "邮差包", material: "皮革", pattern: "纯色", colorTone: "深棕", colorFamily: "棕色", colorTemperature: "暖色", lightness: "低", saturation: "低", fit: "常规", length: "中", layer: "配饰", silhouette: "横向方形", visualWeight: "中等", statementLevel: 2, role: "基础款", layering: [], warmth: 1, formality: 3, styles: ["通勤", "简约", "轻复古"], occasions: ["通勤", "休闲", "旅行"], seasons: ["春季", "夏季", "秋季", "冬季"], weather: ["晴天", "多云"],
+  }),
+  garment("male", "male-hat-gray-beanie", "中灰罗纹针织帽", "帽子", "灰色", "#777A79", "秋冬", "休闲", {
+    subcategory: "针织帽", material: "羊毛混纺", pattern: "罗纹", patternScale: "细", colorTone: "中灰", colorFamily: "灰色", colorTemperature: "中性", lightness: "中", saturation: "低", fit: "贴合", length: "短", layer: "配饰", silhouette: "圆顶", visualWeight: "轻", statementLevel: 2, role: "点缀款", layering: [], warmth: 4, formality: 1, styles: ["休闲", "简约", "城市户外"], occasions: ["休闲", "旅行", "运动"], seasons: ["秋季", "冬季"], weather: ["多云", "寒冷"],
+  }),
 ];
+
+const femaleStarterCount = starterGarments.filter(item => item.gender === "female").length;
+const maleStarterCount = starterGarments.filter(item => item.gender === "male").length;
+
+if (
+  femaleStarterCount !== STARTER_WARDROBE_SIZE_PER_GENDER
+  || maleStarterCount !== STARTER_WARDROBE_SIZE_PER_GENDER
+) {
+  throw new Error(
+    `预设衣柜目录数量不一致：女生 ${femaleStarterCount} 件，男生 ${maleStarterCount} 件，每性别应为 ${STARTER_WARDROBE_SIZE_PER_GENDER} 件。`,
+  );
+}
 
 export function starterGarmentsFor(gender: string | undefined): StarterGarment[] {
   const normalized = gender === "男" ? "male" : "female";
