@@ -1,7 +1,7 @@
 #!/bin/bash
-# 易搭 dev 服务器守护脚本：崩溃后自动重启
+# Layra dev 服务器守护脚本：崩溃后自动重启
 # 用法：bash scripts/keep-dev-alive.sh
-PROJECT_DIR="/Users/a0000/Desktop/易搭-AI穿搭助手"
+PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 LOG="/tmp/yida-dev.log"
 
 cd "$PROJECT_DIR"
