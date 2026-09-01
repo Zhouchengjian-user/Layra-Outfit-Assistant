@@ -135,7 +135,7 @@ function productImagePrompt(drawPrompt: string) {
 }
 
 function resolveArkProductImageSize() {
-  const configured = getServerEnv("ARK_PRODUCT_IMAGE_SIZE") || getServerEnv("ARK_IMAGE_SIZE");
+  const configured = getServerEnv("ARK_PRODUCT_IMAGE_SIZE");
   if (!configured) return DEFAULT_ARK_PRODUCT_IMAGE_SIZE;
   const preset = configured.toUpperCase();
   if (["2K", "3K", "4K"].includes(preset)) return preset;

@@ -41,18 +41,19 @@ test("全身照识别纠正具体品类、保留被外套遮挡的内搭并过�
   assert.match(analyzer, /扣带/);
   assert.match(analyzer, /category === "腰带" && depictionType !== "product" && x2 - x1 < \(y2 - y1\) \* 1\.3/);
 
-  // 第二次查漏必须显式检查领带、领结与围巾，而非只复查大件服装。
+  // 单次快速扫描仍必须显式检查领带、领结与围巾。
   assert.match(analyzer, /领带、领结、围巾归为其他配饰/);
-  assert.match(analyzer, /颈部领带\/领结\/围巾/);
-  // 两路都在短时间内被限流时，用一次延时综合扫描恢复；欠费错误不得重复请求 DashScope。
+  assert.match(analyzer, /帽子、每件首饰、外套、内搭上衣、独立腰带/);
+  // 正常只扫一次；快速失败可短延时重试，仅返回一件时才补查。
   assert.match(analyzer, /const scanStartedAt = performance\.now\(\)/);
-  assert.match(analyzer, /const hasBillingFailure = detectionRuns\.some\(result => result\.status === "rejected" && isProviderBillingFailure\(result\.reason\)\)/);
-  assert.match(analyzer, /if \(elapsedMs < 2_000 && !hasBillingFailure\)/);
-  assert.match(analyzer, /setTimeout\(resolve, 700\)/);
-  assert.match(analyzer, /requestDetectionsWithFallback\(primaryProvider, arkFallback, imageData, outfitPrompt, fallbackBudget\)/);
+  assert.match(analyzer, /if \(elapsedMs < 2_000 && !isProviderBillingFailure\(error\)\)/);
+  assert.match(analyzer, /setTimeout\(resolve, 350\)/);
+  assert.match(analyzer, /requestDetectionsWithFallback\(primaryProvider, fallbackProvider, imageData, outfitPrompt, fallbackBudget\)/);
+  assert.match(analyzer, /if \(general\.length === 1 && auditBudget >= 3_000\)/);
+  assert.doesNotMatch(analyzer, /Promise\.allSettled\(\[/);
 });
 
-test("视觉识别在 DashScope 欠费或不可用时可降级到显式配置的火山方舟", async () => {
+test("视觉识别优先使用显式配置的火山方舟，并保留可选的 DashScope 降级方向", async () => {
   const analyzer = await read("../app/api/wardrobe/analyze/route.ts");
   const envExample = await read("../.env.example");
 
@@ -61,11 +62,25 @@ test("视觉识别在 DashScope 欠费或不可用时可降级到显式配置的
   assert.match(analyzer, /getServerEnv\("ARK_VISION_MODEL"\)\.trim\(\)/);
   assert.match(analyzer, /arkApiKey && arkVisionModel/);
   assert.match(analyzer, /defaultArkBaseUrl = "https:\/\/ark\.cn-beijing\.volces\.com\/api\/v3"/);
-  assert.match(analyzer, /requestDetectionsWithFallback\(primaryProvider, arkFallback/);
+  assert.match(analyzer, /getServerEnv\("WARDROBE_VISION_PROVIDER"\)\.trim\(\)\.toLowerCase\(\)/);
+  assert.match(analyzer, /availableArk \|\| availableDashScope/);
+  assert.match(analyzer, /requestDetectionsWithFallback\(primaryProvider, fallbackProvider/);
+  assert.match(analyzer, /primaryProvider\.name === "dashscope" \? availableArk : availableDashScope/);
+  assert.match(analyzer, /error instanceof SyntaxError/);
+  assert.match(analyzer, /error instanceof DetectionOutputError/);
+  assert.match(analyzer, /completeCompactEntries\(normalized\)/);
+  assert.match(analyzer, /wardrobe_detection_same_provider_repair/);
+  assert.match(analyzer, /if \(partialDetections\.length\) return partialDetections/);
+  assert.match(analyzer, /detectionProviderCooldowns/);
+  assert.match(analyzer, /if \(!detections\.length\) throw new DetectionOutputError/);
+  assert.match(analyzer, /max_tokens: 520/);
+  assert.match(analyzer, /primaryTimeoutMs = fallback \? Math\.min\(timeoutMs, 12_000\) : timeoutMs/);
   assert.match(analyzer, /if \(provider\.name === "dashscope"\) requestBody\.enable_thinking = false/);
-  assert.match(analyzer, /!hasBillingFailure/);
+  assert.match(analyzer, /if \(provider\.name === "volcengine-ark"\) requestBody\.thinking = \{ type: "disabled" \}/);
+  assert.match(analyzer, /!isProviderBillingFailure\(error\)/);
   assert.match(envExample, /^ARK_VISION_MODEL=$/m);
   assert.match(envExample, /^ARK_BASE_URL=https:\/\/ark\.cn-beijing\.volces\.com\/api\/v3$/m);
+  assert.match(envExample, /^WARDROBE_VISION_PROVIDER=volcengine$/m);
 });
 
 test("客户端逐件隔离预处理失败，整套失败不会伪装成上衣", async () => {
@@ -73,8 +88,8 @@ test("客户端逐件隔离预处理失败，整套失败不会伪装成上衣",
   const page = await read("../app/page.tsx");
   const failedOutfit = functionBlock(processor, "quickFailedDraft", "processGarmentUpload");
 
-  // 长耗时重建必须串行，避免每个请求的超时都耗在等待另一件衣物上。
-  assert.match(processor, /const maxClientReconstructionRequests = 1/);
+  // 长耗时重建限制为两路，既缩短整套等待时间，也避免无界并发压垮供应商。
+  assert.match(processor, /const maxClientReconstructionRequests = 2/);
   assert.match(processor, /activeReconstructionRequests >= maxClientReconstructionRequests/);
 
   // discovery 中一件裁剪失败要落成该单品的失败卡，不能拒绝整张照片的映射任务。
@@ -100,8 +115,14 @@ test("客户端逐件隔离预处理失败，整套失败不会伪装成上衣",
 
 test("服务端重建共享九十秒总时限且只重试瞬态错误", async () => {
   const reconstructor = await read("../app/api/wardrobe/reconstruct/route.ts");
+  const envExample = await read("../.env.example");
   const transientClassifier = functionBlock(reconstructor, "isTransientProviderError", "inspectCompleteness");
 
+  assert.match(reconstructor, /const defaultVolcengineProviderConcurrency = 2/);
+  assert.match(reconstructor, /const maxProviderConcurrency = 2/);
+  assert.match(reconstructor, /getServerEnv\("GARMENT_RECONSTRUCTION_CONCURRENCY"\)/);
+  assert.match(reconstructor, /activeProviderRequests >= configuredProviderConcurrency\(\)/);
+  assert.match(envExample, /^GARMENT_RECONSTRUCTION_CONCURRENCY=2$/m);
   assert.match(reconstructor, /const reconstructionDeadlineMs = 90_000/);
   assert.match(reconstructor, /const deadlineAt = startedAt \+ reconstructionDeadlineMs/);
   assert.match(reconstructor, /const remainingMs = \(\) => Math\.max\(0, Math\.floor\(deadlineAt - performance\.now\(\)\)\)/);
@@ -136,6 +157,9 @@ test("阿里欠费或鉴权失败时仅降级一次到支持双参考图的 Seed
   assert.match(accountClassifier, /error\.status === 401 \|\| error\.status === 403/);
   assert.match(reconstructor, /arrearage\|invalid\.\?api\.\?key/);
   assert.match(fallback, /!isAliyunAccountFailure\(error\) \|\| !getServerEnv\("ARK_API_KEY"\)/);
+  assert.match(fallback, /getServerEnv\("GARMENT_RECONSTRUCTION_PROVIDER"\)\.trim\(\)\.toLowerCase\(\)/);
+  assert.match(fallback, /preferredProvider === "volcengine" && getServerEnv\("ARK_API_KEY"\)/);
+  assert.match(envExample, /^GARMENT_RECONSTRUCTION_PROVIDER=volcengine$/m);
 
   // 方舟使用同一请求的 90 秒总时限；第一张通过即返回，仅质量不合格时允许一张纠错候选。
   assert.match(fallback, /const deadlineAt = startedAt \+ reconstructionDeadlineMs/);

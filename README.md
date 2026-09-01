@@ -2,10 +2,18 @@
 
 易搭是一款面向手机 H5 的个人 AI 衣柜与穿搭助手。用户可以从照片中识别单品、生成白底商品图、维护个人衣柜，并获得穿搭推荐和试穿效果图。
 
+## 产品演示
+
+[
+  ![易搭 AI 穿搭助手产品演示](docs/demo/yida-product-demo-cover.png)
+](docs/demo/yida-product-demo.mp4)
+
+> 点击封面播放或下载完整演示视频。
+
 ## 当前能力
 
 - 一次上传 1–5 张照片，识别衣物、鞋履、帽子、腰带、包和首饰等单品
-- 按识别框逐件裁剪，生成 1536×1536 白底商品图并补充结构化穿搭标签
+- 按识别框逐件裁剪，使用 veImageX productv2 生成 1024×1024 白底商品图并补充结构化穿搭标签
 - 衣柜分类浏览、编辑、清洗状态、删除和多用户数据隔离
 - AI 穿搭推荐、历史记录、收藏搭配和模特试穿
 - 邀请码登录，服务端签名会话 Cookie，有效期 7 天
@@ -19,7 +27,9 @@
 - 生产镜像目标平台为 `linux/amd64`
 - 火山引擎 veFaaS Web 应用函数、TOS、Serverless API 网关
 - 阿里云百炼 `Qwen3-VL-Flash`、`Qwen-Image 2.0`
-- 火山方舟图像模型用于试穿效果图
+- 火山方舟 Seedream 5.0 Lite 用于多参考图试穿；效果图沿用用户全身原图的画幅与最终像素尺寸
+
+全身照处理是两段式的：视觉模型先识别上衣、下装、鞋履、帽子、包和配饰并逐件裁剪，ImageX `productv2` 再负责每个单品的像素级去背景。`productv2` 本身不是多单品检测器，不能直接替代第一段。穿着照中被人体遮挡、结构不完整的衣物会转入生成式补全，不会把残片当成完整商品图。
 
 ## 本地开发
 
@@ -77,15 +87,28 @@ DASHSCOPE_GARMENT_RECONSTRUCTION_SIZE=1024*1024
 DASHSCOPE_GARMENT_RECONSTRUCTION_CANDIDATES=2
 
 ARK_API_KEY=<secret>
-# 可选：只有填写当前账号已开通的视觉模型或推理接入点 ID 时，才启用识别降级。
+# 填写当前账号已开通且 API Key 已授权的视觉模型或推理接入点 ID。
 ARK_VISION_MODEL=
 ARK_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
+# 有 Ark 配置时默认作为衣柜识别主链路；设为 dashscope 才会优先阿里云。
+WARDROBE_VISION_PROVIDER=volcengine
 ARK_IMAGE_MODEL=doubao-seedream-5-0-lite-260128
-ARK_IMAGE_SIZE=1920x1920
+# 仅作为 Seedream 的生成像素预算；输出宽高比及最终像素尺寸始终跟随用户全身原图。
+ARK_IMAGE_SIZE=1728x2304
 # 可选：百炼生成服务欠费或鉴权失败时，商品图自动切换到这组 Seedream 配置。
 ARK_GARMENT_RECONSTRUCTION_MODEL=
-ARK_GARMENT_RECONSTRUCTION_SIZE=
+GARMENT_RECONSTRUCTION_PROVIDER=volcengine
+ARK_GARMENT_RECONSTRUCTION_SIZE=1920x1920
+ARK_PRODUCT_IMAGE_SIZE=1920x1920
 ARK_GARMENT_RECONSTRUCTION_CANDIDATES=2
+
+CUTOUT_PROVIDER=volcengine-hybrid
+VOLC_IMAGEX_SERVICE_ID=<veImageX service id>
+VOLC_IMAGEX_DOMAIN=<该服务下已启用的域名>
+# 可留空，默认使用服务创建时自动生成的 tplv-{serviceId}-image 原图模板。
+VOLC_IMAGEX_TEMPLATE=
+VOLC_IMAGEX_REGION=cn-north-1
+VOLC_IMAGEX_HOST=imagex.volcengineapi.com
 
 SQLITE_PATH=/tmp/data/yida.sqlite
 SQLITE_BACKUP_INTERVAL_MS=300000
@@ -95,6 +118,8 @@ TOS_REGION=cn-beijing
 TOS_ENDPOINT=https://tos-s3-cn-beijing.volces.com
 TOS_BUCKET=<bucket-name>
 ```
+
+ImageX 调用使用当前 veFaaS 请求的 Role STS 凭据，因此该 Role 除 TOS 权限外还要授予上述 veImageX 服务的必要调用权限。若运行环境不能使用 Role STS，可在部署平台的密钥环境变量中单独配置 `VOLC_ACCESSKEY` / `VOLC_SECRETKEY` / `VOLC_SESSION_TOKEN`，不得写入代码或镜像。
 
 生产轻量模式不要配置 `MYSQL_HOST`，否则应用会切换到 MySQL。生产环境也不要配置 `TOS_ACCESS_KEY_ID`、`TOS_ACCESS_KEY_SECRET` 或其他长期 TOS AK/SK。
 

@@ -29,6 +29,6 @@ test("ComfyUI BiRefNet 工作流使用官方节点并由衣物上传链路显示
   assert.match(productizer, /"X-Layra-Provider": meta\.provider/);
   assert.match(client, /response\.headers\.get\("X-Layra-Provider"\)/);
   assert.match(page, /本地 ComfyUI/);
-  assert.match(env, /CUTOUT_PROVIDER=aliyun/);
+  assert.match(env, /CUTOUT_PROVIDER=volcengine-hybrid/);
   assert.match(env, /COMFYUI_BASE_URL=/);
 });

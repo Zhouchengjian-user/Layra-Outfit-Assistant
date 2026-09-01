@@ -36,7 +36,7 @@ export type ProcessedGarmentImage = {
   aiTags: GarmentAITags;
   completionStatus: GarmentCompletionStatus;
   productOrigin: "source-preview" | "segmentation" | "ai-reconstructed";
-  cutoutProvider?: "comfyui-birefnet" | "aliyun-viapi";
+  cutoutProvider?: "comfyui-birefnet" | "aliyun-viapi" | "volcengine-imagex-productv2";
   reconstructionReasons: string[];
   depictionType: GarmentDepictionType;
   visibleRatio: number;
@@ -73,15 +73,20 @@ type AtlasMetadata = {
 
 // Preserve enough pixels for shoes, jewelry and small bags in a full-body shot.
 const normalizedImageMaxSide = 1280;
+const analysisImageMaxSide = 896;
 const productCanvasSize = 1024;
 const productCanvasInset = 54;
 const uploadProcessingBudgetMs = 34_000;
 const minimumFallbackBudgetMs = 1_800;
+// ImageX productv2 normally finishes in 4-6 seconds. Keep enough headroom for
+// TOS upload and result download while still honoring the sub-10-second UX cap.
+const itemProductizeTimeoutMs = 8_800;
 const maxClientProductizeRequests = 6;
-// Match the server-side image-generation queue. Starting several long-lived
-// HTTP requests here makes their 120s timeout include time spent waiting for
-// another garment, even though only one provider job can run at a time.
-const maxClientReconstructionRequests = 1;
+// Match the bounded server-side image-generation queue. Volcengine Seedream
+// can safely process two independent garments in parallel.
+// Keeping this bounded at two shortens a full-outfit batch without creating the
+// burst of image-generation requests that previously hurt provider reliability.
+const maxClientReconstructionRequests = 2;
 const atlasClassByCategory = new Map<string, AtlasClass>([
   ["上衣", "tops"],
   ["裤子", "pants"],
@@ -180,22 +185,32 @@ function colorForName(name: string) {
   return { name: name || "未识别", hex: "#999999", rgb: { r: 153, g: 153, b: 153 } };
 }
 
-async function createNormalizedBlob(file: File) {
+function createScaledJpegBlobFromBitmap(bitmap: ImageBitmap, maxSide: number, quality: number) {
+  const scale = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height));
+  const canvas = createProcessingCanvas(
+    Math.max(1, Math.round(bitmap.width * scale)),
+    Math.max(1, Math.round(bitmap.height * scale)),
+  );
+  const context = processingContext(canvas);
+  if (!context) throw new Error("当前浏览器不支持图片处理");
+  // JPEG has no alpha channel. Explicitly composite transparent uploads onto
+  // white; otherwise browsers commonly encode transparent pixels as black.
+  context.fillStyle = "#ffffff";
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  return canvasToJpegBlob(canvas, quality);
+}
+
+async function createUploadBlobTasks(file: File) {
   const bitmap = await createImageBitmap(file);
   try {
-    const scale = Math.min(1, normalizedImageMaxSide / Math.max(bitmap.width, bitmap.height));
-    const canvas = createProcessingCanvas(
-      Math.max(1, Math.round(bitmap.width * scale)),
-      Math.max(1, Math.round(bitmap.height * scale)),
-    );
-    const context = processingContext(canvas);
-    if (!context) throw new Error("当前浏览器不支持图片处理");
-    // JPEG has no alpha channel. Explicitly composite transparent uploads onto
-    // white; otherwise browsers commonly encode transparent pixels as black.
-    context.fillStyle = "#ffffff";
-    context.fillRect(0, 0, canvas.width, canvas.height);
-    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-    return await canvasToJpegBlob(canvas, 0.82);
+    // Decode a large phone photo once, then encode the high-quality working
+    // copy and compact VLM copy concurrently. The previous pipeline decoded and
+    // resampled the image twice before the first network request could start.
+    return {
+      normalizedBlobPromise: createScaledJpegBlobFromBitmap(bitmap, normalizedImageMaxSide, 0.82),
+      analysisBlobPromise: createScaledJpegBlobFromBitmap(bitmap, analysisImageMaxSide, 0.74),
+    };
   } finally {
     bitmap.close();
   }
@@ -356,7 +371,7 @@ async function analyzeGarments(image: Blob) {
   const { data } = await requestJson<{ detections?: GarmentDetection[] }>("/api/wardrobe/analyze", {
     method: "POST",
     body: form,
-    timeoutMs: 27_000,
+    timeoutMs: 22_000,
   });
   if (!data.detections?.length) throw new Error("没有识别到单品");
   return data.detections;
@@ -496,7 +511,9 @@ async function productizeGarment(
     atlas,
     provider: response.headers.get("X-Layra-Provider") === "comfyui-birefnet"
       ? "comfyui-birefnet" as const
-      : "aliyun-viapi" as const,
+      : response.headers.get("X-Layra-Provider") === "volcengine-imagex-productv2"
+        ? "volcengine-imagex-productv2" as const
+        : "aliyun-viapi" as const,
   };
 }
 
@@ -678,14 +695,14 @@ export async function processGarmentUpload(
 ): Promise<ProcessedGarmentImage[]> {
   const sourceKey = options.sourceKey || `upload:${file.name}:${file.lastModified}`;
   const processingDeadline = performance.now() + uploadProcessingBudgetMs;
-  const normalizedBlob = await createNormalizedBlob(file);
+  const { normalizedBlobPromise, analysisBlobPromise } = await createUploadBlobTasks(file);
   const wholeTags = normalizeGarmentAITags(null, { category: "服饰", color: "未识别", season: "四季", style: "简约" });
 
-  // Detection and the fast top/pants atlas share the normalized source. The
-  // atlas remains an optimization for clean product photos; full-outfit
-  // coverage comes from the two complementary Qwen detection passes.
-  const detectionsPromise = analyzeGarments(normalizedBlob);
-  const atlasSegmentationPromise = productizeGarment(
+  // Start both remote paths as soon as their independently encoded input is
+  // ready. The 1280px source preserves crop/reconstruction quality, while the
+  // compact 896px copy keeps the latency-sensitive wardrobe scan fast.
+  const detectionsPromise = analysisBlobPromise.then(analyzeGarments);
+  const atlasSegmentationPromise = normalizedBlobPromise.then(normalizedBlob => productizeGarment(
     normalizedBlob,
     "服饰整图",
     "",
@@ -693,7 +710,8 @@ export async function processGarmentUpload(
     wholeTags,
     7_800,
     { atlasClasses: ["tops", "pants"], combinedAtlas: options.combinedAtlas, priority: "background" },
-  ).catch(() => null);
+  )).catch(() => null);
+  const normalizedBlob = await normalizedBlobPromise;
 
   let detections: GarmentDetection[];
   try {
@@ -865,7 +883,7 @@ export async function processGarmentUpload(
                 detection.color,
                 detection.recommended_api,
                 aiTags,
-                Math.min(5_500, fallbackBudget),
+                Math.min(itemProductizeTimeoutMs, fallbackBudget),
                 { partiallyOccluded: detection.partially_occluded },
               );
               blob = generated.blob;

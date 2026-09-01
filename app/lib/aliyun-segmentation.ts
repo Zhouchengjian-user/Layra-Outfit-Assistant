@@ -11,11 +11,12 @@ import sharp from "sharp";
 import { comfyUiAvailable, isComfyUiConfigured, runComfyUiBiRefNetCutout } from "./comfyui-cutout";
 import { getServerEnv } from "./server-env";
 import { requireServerEnv } from "./server-env";
+import { isVolcengineImageXConfigured, runVolcengineImageXProductCutout } from "./volcengine-imagex";
 
 export type GarmentSegmentationApi = "SegmentCloth" | "SegmentCommodity";
 export type GarmentAtlasClass = "tops" | "pants";
-export type GarmentCutoutProvider = "aliyun-viapi" | "comfyui-birefnet";
-export type GarmentCutoutMode = "aliyun" | "comfyui" | "hybrid";
+export type GarmentCutoutProvider = "aliyun-viapi" | "comfyui-birefnet" | "volcengine-imagex-productv2";
+export type GarmentCutoutMode = "aliyun" | "comfyui" | "hybrid" | "volcengine" | "volcengine-hybrid";
 
 export type SegmentationResult = {
   bytes: Buffer;
@@ -369,8 +370,61 @@ async function alphaForegroundRatio(bytes: Buffer) {
 
 export function configuredGarmentCutoutMode(): GarmentCutoutMode {
   const value = getServerEnv("CUTOUT_PROVIDER").toLowerCase();
-  if (value === "comfyui" || value === "hybrid") return value;
+  if (value === "comfyui" || value === "hybrid" || value === "volcengine" || value === "volcengine-hybrid") {
+    return value;
+  }
+  if (value === "imagex" || value === "volcengine-imagex") return "volcengine";
   return "aliyun";
+}
+
+async function segmentWithVolcengineImageX(
+  sourceBuffer: Buffer,
+  options: SegmentationOptions,
+  deadlineAt: number,
+): Promise<SegmentationResult> {
+  const result = await runVolcengineImageXProductCutout(sourceBuffer, deadlineAt);
+  const input = sharp(result.rgba, { failOn: "none", limitInputPixels: 80_000_000 }).rotate();
+  const metadata = await input.metadata();
+  const foregroundRatio = metadata.hasAlpha
+    ? await alphaForegroundRatio(result.rgba)
+    : await whiteForegroundRatio(result.rgba);
+
+  let pipeline = input.clone();
+  if (!options.preserveGeometry) {
+    // productv2 返回单品透明图。先去掉透明/白色空白，再统一放到
+    // 1024 画布并保留约 9% 安全边距，避免长裤、帽檐和包带被贴边裁断。
+    pipeline = metadata.hasAlpha
+      ? pipeline.trim({ background: { r: 0, g: 0, b: 0, alpha: 0 }, threshold: 6 })
+      : pipeline.trim({ background: "#ffffff", threshold: 8 });
+  }
+  const bytes = options.preserveGeometry
+    ? await pipeline
+      .flatten({ background: "#ffffff" })
+      .jpeg({ quality: 94, chromaSubsampling: "4:4:4", mozjpeg: true })
+      .toBuffer()
+    : await pipeline
+      .resize(840, 840, {
+        fit: "contain",
+        // The next extend operation can remove the alpha channel. Use an
+        // opaque white contain canvas so transparent letterbox pixels never
+        // turn into black bars before the final flatten.
+        background: { r: 255, g: 255, b: 255, alpha: 1 },
+        withoutEnlargement: false,
+      })
+      .extend({ top: 92, bottom: 92, left: 92, right: 92, background: { r: 255, g: 255, b: 255, alpha: 1 } })
+      .flatten({ background: "#ffffff" })
+      .jpeg({ quality: 95, chromaSubsampling: "4:4:4", mozjpeg: true })
+      .toBuffer();
+
+  return {
+    bytes,
+    contentType: "image/jpeg",
+    elapsedMs: result.providerMs,
+    provider: "volcengine-imagex-productv2",
+    geometry: options.preserveGeometry ? "source" : "square-1024",
+    quality: foregroundRatio >= 0.008 && foregroundRatio <= 0.92 ? "good" : "review",
+    foregroundRatio,
+  };
 }
 
 async function segmentWithComfyUi(
@@ -418,6 +472,9 @@ export async function segmentGarmentToWhiteBackground(
   const cutoutMode = configuredGarmentCutoutMode();
 
   if (atlasClasses?.length) {
+    if (cutoutMode === "volcengine" || cutoutMode === "volcengine-hybrid") {
+      throw new Error("ImageX productv2 不提供上衣/下装分类面板，将在单品识别后逐件抠图");
+    }
     const preferComfyForIndividualItems = cutoutMode !== "aliyun"
       && isComfyUiConfigured()
       && await comfyUiAvailable(Math.min(1_200, deadlineAt - Date.now()));
@@ -453,6 +510,19 @@ export async function segmentGarmentToWhiteBackground(
       sourceWidth: atlas.width,
       sourceHeight: atlas.height,
     };
+  }
+
+  if (cutoutMode === "volcengine" || cutoutMode === "volcengine-hybrid") {
+    try {
+      if (!isVolcengineImageXConfigured()) throw new Error("尚未完整配置 ImageX productv2");
+      const result = await segmentWithVolcengineImageX(sourceBuffer, options, deadlineAt);
+      if (cutoutMode === "volcengine-hybrid" && result.quality !== "good") {
+        throw new Error("ImageX productv2 结果未通过前景完整度检查");
+      }
+      return result;
+    } catch (error) {
+      if (cutoutMode === "volcengine") throw error;
+    }
   }
 
   if (cutoutMode !== "aliyun" && isComfyUiConfigured()) {

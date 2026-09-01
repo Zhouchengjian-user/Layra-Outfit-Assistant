@@ -1,4 +1,4 @@
-import { requireServerEnv, getServerEnv } from "../../../lib/server-env";
+import { getServerEnv } from "../../../lib/server-env";
 import { requireSession, responseForAuthError } from "../../../lib/auth";
 import { apiErrorResponse, logServerEvent } from "../../../lib/observability";
 import { withProtectedApiRequest } from "../../../lib/protected-route";
@@ -20,12 +20,20 @@ type Detection = {
   tags?: GarmentAITags;
 };
 
-// Two complementary Qwen passes run in parallel. A slightly wider per-pass
-// window is still much faster than serial retries and prevents the client from
-// falling back to a clothing-only mask when accessories take longer to name.
-const visionDetectionTimeoutMs = 24_000;
+// Keep the primary scan inside the upload UX budget. The compact tuple schema
+// cuts output tokens substantially; a second pass is reserved for the rare
+// result that contains only one item.
+// Normal Seed 2.1 scans finish in roughly 6-9 seconds. The larger workflow
+// budget is used only when the primary returns malformed structured output and
+// the secondary domestic VLM needs time to recover the same upload.
+const visionDetectionTimeoutMs = 20_000;
+const detectionCacheTtlMs = 6 * 60 * 60 * 1_000;
+const maxCachedDetections = 40;
 const defaultArkBaseUrl = "https://ark.cn-beijing.volces.com/api/v3";
 const allowedCategories = new Set(["上衣", "外套", "裤子", "裙子", "连衣裙", "鞋子", "帽子", "腰带", "包", "首饰", "其他配饰"]);
+
+const detectionCache = new Map<string, { detections: Detection[]; expiresAt: number }>();
+const detectionProviderCooldowns = new Map<string, number>();
 
 type DetectionProviderConfig = {
   name: "dashscope" | "volcengine-ark";
@@ -43,6 +51,13 @@ class DetectionProviderError extends Error {
   ) {
     super(message);
     this.name = "DetectionProviderError";
+  }
+}
+
+class DetectionOutputError extends Error {
+  constructor(message: string, readonly partialDetections: Detection[] = []) {
+    super(message);
+    this.name = "DetectionOutputError";
   }
 }
 
@@ -115,12 +130,95 @@ function toBase64(buffer: ArrayBuffer) {
   return btoa(binary);
 }
 
+function normalizeJsonCandidate(value: string) {
+  return value
+    .replace(/[“”]/g, '"')
+    .replace(/[‘’]/g, '"')
+    .replace(/，/g, ",")
+    .replace(/：/g, ":")
+    .replace(/,\s*([}\]])/g, "$1")
+    .replace(/,\s*([wp])\s*(?=[,\]])/g, ',"$1"');
+}
+
+function completeCompactEntries(value: string) {
+  const entries: unknown[] = [];
+  let depth = 0;
+  let entryStart = -1;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = 0; index < value.length; index++) {
+    const character = value[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') inString = false;
+      continue;
+    }
+    if (character === '"') {
+      inString = true;
+      continue;
+    }
+    if (character === "[") {
+      depth += 1;
+      if (depth === 2) entryStart = index;
+      continue;
+    }
+    if (character !== "]") continue;
+    if (depth === 2 && entryStart >= 0) {
+      try {
+        const entry = JSON.parse(value.slice(entryStart, index + 1)) as unknown;
+        if (Array.isArray(entry) && entry.length >= 3 && Array.isArray(entry[2]) && entry[2].length === 4) {
+          entries.push(entry);
+        }
+      } catch {
+        // Keep scanning: a later complete tuple may still be independently valid.
+      }
+      entryStart = -1;
+    }
+    depth = Math.max(0, depth - 1);
+  }
+  return entries;
+}
+
 function parseJsonContent(content: string) {
   const stripped = content.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
   const start = stripped.indexOf("[");
   const end = stripped.lastIndexOf("]");
-  if (start < 0 || end <= start) throw new Error("模型未返回单品列表");
-  return JSON.parse(stripped.slice(start, end + 1)) as unknown[];
+  if (start < 0 || end <= start) throw new DetectionOutputError("模型未返回单品列表");
+  const candidate = stripped.slice(start, end + 1);
+  try {
+    return JSON.parse(candidate) as unknown[];
+  } catch {
+    const normalized = normalizeJsonCandidate(candidate);
+    try {
+      return JSON.parse(normalized) as unknown[];
+    } catch {
+      // A malformed final tuple should not discard the valid items that came
+      // before it. Preserve them while the provider gets one strict repair pass.
+      const partialDetections = cleanDetections(completeCompactEntries(normalized));
+      throw new DetectionOutputError("模型返回的单品列表格式不完整", partialDetections);
+    }
+  }
+}
+
+function expandCompactDetection(entry: unknown) {
+  if (!Array.isArray(entry)) return entry;
+  const [category, color, bbox, occluded, evidence, depiction, identity] = entry;
+  const identityText = String(identity || "").trim();
+  return {
+    category,
+    color,
+    bbox_2d: bbox,
+    partially_occluded: occluded === 1 || occluded === true,
+    confidence: 0.8,
+    visible_ratio: occluded === 1 || occluded === true ? 0.55 : 0.9,
+    is_real_item: true,
+    source_evidence: evidence,
+    depiction_type: depiction === "p" ? "product" : depiction === "w" ? "worn" : "unknown",
+    identity_key: identityText,
+    garment_description: identityText,
+  };
 }
 
 function categoryFromSemantics(rawCategory: unknown, semanticText: string) {
@@ -155,8 +253,30 @@ function isProviderBillingFailure(error: unknown) {
   return /arrearage|insufficient(?:[_\s-]*(?:balance|funds?))?|billing|balance|欠费|余额不足/i.test(`${error.code} ${error.message}`);
 }
 
-function shouldFallbackToArk(error: unknown) {
+function detectionProviderKey(provider: DetectionProviderConfig) {
+  return `${provider.name}:${provider.model}`;
+}
+
+function detectionProviderIsCoolingDown(provider: DetectionProviderConfig) {
+  const expiresAt = detectionProviderCooldowns.get(detectionProviderKey(provider)) || 0;
+  if (expiresAt > Date.now()) return true;
+  detectionProviderCooldowns.delete(detectionProviderKey(provider));
+  return false;
+}
+
+function coolDownDetectionProvider(provider: DetectionProviderConfig) {
+  // Billing/auth failures cannot recover within an upload. Remember them for a
+  // short period so subsequent users are not delayed by the same doomed call.
+  detectionProviderCooldowns.set(detectionProviderKey(provider), Date.now() + 10 * 60 * 1_000);
+}
+
+function shouldFallbackProvider(error: unknown) {
   if (isProviderBillingFailure(error)) return true;
+  // A vision request can succeed at the HTTP layer but occasionally return a
+  // truncated or malformed JSON array. Treat that as a provider-output failure
+  // so the other configured domestic VLM can recover the upload automatically.
+  if (error instanceof SyntaxError) return true;
+  if (error instanceof DetectionOutputError) return true;
   if (error instanceof DetectionProviderError) {
     if ([401, 403, 408, 409, 425, 429].includes(error.status) || error.status >= 500) return true;
     return /throttl|rate.?limit|quota|service.?unavailable|internal.?error|timeout|temporar/i.test(error.code);
@@ -168,11 +288,11 @@ function shouldFallbackToArk(error: unknown) {
 async function requestDetections(provider: DetectionProviderConfig, imageData: string, prompt: string, timeoutMs = visionDetectionTimeoutMs) {
   const requestBody: Record<string, unknown> = {
     model: provider.model,
-    temperature: 0.1,
-    // A full-body photo can legitimately contain 8-12 separate items. Keep
-    // enough room for every bbox and description instead of truncating the
-    // JSON after the first few garments.
-    max_tokens: 1_600,
+    temperature: 0,
+    // A compact tuple keeps 8-12 items well below this ceiling. Output-token
+    // generation dominated the old two-pass latency, so avoid verbose keys and
+    // long descriptions on the latency-sensitive first scan.
+    max_tokens: 520,
     messages: [{ role: "user", content: [
       { type: "image_url", image_url: { url: imageData } },
       { type: "text", text: prompt },
@@ -181,6 +301,10 @@ async function requestDetections(provider: DetectionProviderConfig, imageData: s
   // enable_thinking is a DashScope-compatible extension and is rejected by
   // some OpenAI-compatible providers, so never send it to Volcengine Ark.
   if (provider.name === "dashscope") requestBody.enable_thinking = false;
+  // Garment localization is a bounded structured-output task, not a reasoning
+  // task. Seed 2.1 enables deep thinking by default; disabling it avoids paying
+  // for hidden reasoning tokens and keeps upload latency predictable.
+  if (provider.name === "volcengine-ark") requestBody.thinking = { type: "disabled" };
 
   const response = await fetch(`${provider.baseUrl}/chat/completions`, {
     method: "POST",
@@ -201,17 +325,21 @@ async function requestDetections(provider: DetectionProviderConfig, imageData: s
       status: response.status,
       code,
     });
-    throw new DetectionProviderError(
+    const error = new DetectionProviderError(
       provider.name,
       response.status,
       code,
       typeof message === "string" ? message : "单品识别失败",
     );
+    if (isProviderBillingFailure(error) || [401, 403].includes(error.status)) coolDownDetectionProvider(provider);
+    throw error;
   }
   const choices = payload.choices as Array<{ message?: { content?: string } }> | undefined;
   const content = choices?.[0]?.message?.content;
   if (!content) throw new Error("模型未返回识别结果");
-  return cleanDetections(parseJsonContent(content));
+  const detections = cleanDetections(parseJsonContent(content));
+  if (!detections.length) throw new DetectionOutputError("模型未返回可用的单品结果");
+  return detections;
 }
 
 async function requestDetectionsWithFallback(
@@ -222,35 +350,69 @@ async function requestDetectionsWithFallback(
   timeoutMs = visionDetectionTimeoutMs,
 ) {
   const startedAt = performance.now();
+  const primaryTimeoutMs = fallback ? Math.min(timeoutMs, 12_000) : timeoutMs;
   try {
-    return await requestDetections(primary, imageData, prompt, timeoutMs);
+    return await requestDetections(primary, imageData, prompt, primaryTimeoutMs);
   } catch (error) {
-    const remainingMs = Math.floor(timeoutMs - (performance.now() - startedAt));
-    if (!fallback || !shouldFallbackToArk(error) || remainingMs < 2_500) throw error;
+    let partialDetections = error instanceof DetectionOutputError ? error.partialDetections : [];
+    let latestError = error;
+    let remainingMs = Math.floor(timeoutMs - (performance.now() - startedAt));
+
+    // Malformed structured output is usually a serialization mistake, not a
+    // recognition failure. Give the same domestic model one concise repair
+    // attempt before crossing providers, which also avoids dependency on the
+    // secondary provider's billing state.
+    if ((error instanceof SyntaxError || error instanceof DetectionOutputError) && remainingMs >= 3_500) {
+      const repairPrompt = `${prompt}\n格式修复：重新检查整张图并完整输出。必须使用英文半角双引号和逗号，不得有尾逗号、Markdown、注释或省略号；每个单品必须恰好7个字段。`;
+      const repairTimeoutMs = fallback ? Math.min(remainingMs - 2_500, 10_000) : remainingMs;
+      logServerEvent("warn", "wardrobe_detection_same_provider_repair", {
+        provider: primary.name,
+        partial_count: partialDetections.length,
+      });
+      try {
+        const repaired = await requestDetections(primary, imageData, repairPrompt, repairTimeoutMs);
+        return addMissingFocusedItems(partialDetections, repaired);
+      } catch (repairError) {
+        latestError = repairError;
+        if (repairError instanceof DetectionOutputError && repairError.partialDetections.length) {
+          partialDetections = addMissingFocusedItems(partialDetections, repairError.partialDetections);
+        }
+      }
+      remainingMs = Math.floor(timeoutMs - (performance.now() - startedAt));
+    }
+
+    if (!fallback || detectionProviderIsCoolingDown(fallback) || !shouldFallbackProvider(latestError) || remainingMs < 2_500) {
+      if (partialDetections.length) return partialDetections;
+      throw latestError;
+    }
 
     logServerEvent("warn", "wardrobe_detection_provider_fallback", {
       from: primary.name,
       to: fallback.name,
-      status: error instanceof DetectionProviderError ? error.status : 0,
-      code: error instanceof DetectionProviderError ? error.code : error instanceof Error ? error.name : "unknown",
+      status: latestError instanceof DetectionProviderError ? latestError.status : 0,
+      code: latestError instanceof DetectionProviderError ? latestError.code : latestError instanceof Error ? latestError.name : "unknown",
     });
     try {
-      return await requestDetections(fallback, imageData, prompt, remainingMs);
+      const fallbackDetections = await requestDetections(fallback, imageData, prompt, remainingMs);
+      return addMissingFocusedItems(partialDetections, fallbackDetections);
     } catch (fallbackError) {
+      if (fallbackError instanceof DetectionOutputError && fallbackError.partialDetections.length) {
+        partialDetections = addMissingFocusedItems(partialDetections, fallbackError.partialDetections);
+      }
       logServerEvent("warn", "wardrobe_detection_fallback_failed", {
         provider: fallback.name,
         status: fallbackError instanceof DetectionProviderError ? fallbackError.status : 0,
         code: fallbackError instanceof DetectionProviderError ? fallbackError.code : fallbackError instanceof Error ? fallbackError.name : "unknown",
       });
-      // Keep the primary failure so an Arrearage response remains identifiable
-      // and is never mistaken for a transient condition worth retrying.
-      throw error;
+      if (partialDetections.length) return partialDetections;
+      throw latestError;
     }
   }
 }
 
 function cleanDetections(value: unknown[]) {
   return value.slice(0, 20).flatMap((entry, index): Detection[] => {
+    entry = expandCompactDetection(entry);
     if (!entry || typeof entry !== "object") return [];
     const item = entry as Record<string, unknown>;
     const rawBox = Array.isArray(item.bbox_2d) ? item.bbox_2d.map(Number) : [];
@@ -313,6 +475,54 @@ function cleanDetections(value: unknown[]) {
       tags: normalizeGarmentAITags(item.tags, { category, color: normalizeColor(item.color) }),
     }];
   });
+}
+
+async function detectionCacheKey(buffer: ArrayBuffer, provider: DetectionProviderConfig) {
+  const prefix = new TextEncoder().encode(`layra-detection-compact-v1\n${provider.name}\n${provider.model}\n`);
+  const bytes = new Uint8Array(prefix.length + buffer.byteLength);
+  bytes.set(prefix);
+  bytes.set(new Uint8Array(buffer), prefix.length);
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+  return Array.from(digest, byte => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function cachedDetections(cacheKey: string) {
+  const cached = detectionCache.get(cacheKey);
+  if (!cached) return null;
+  if (cached.expiresAt <= Date.now()) {
+    detectionCache.delete(cacheKey);
+    return null;
+  }
+  detectionCache.delete(cacheKey);
+  detectionCache.set(cacheKey, cached);
+  return cached.detections;
+}
+
+function storeDetections(cacheKey: string, detections: Detection[]) {
+  detectionCache.delete(cacheKey);
+  detectionCache.set(cacheKey, { detections, expiresAt: Date.now() + detectionCacheTtlMs });
+  while (detectionCache.size > maxCachedDetections) {
+    const oldestKey = detectionCache.keys().next().value;
+    if (!oldestKey) break;
+    detectionCache.delete(oldestKey);
+  }
+}
+
+function detectionResponse(
+  detections: Detection[],
+  provider: DetectionProviderConfig,
+  cacheStatus: "HIT" | "MISS",
+  startedAt: number,
+) {
+  const elapsedMs = Math.round(performance.now() - startedAt);
+  return Response.json({ detections }, { headers: {
+    "Cache-Control": "private, no-store",
+    "X-Yida-Cache": cacheStatus,
+    "X-Layra-Provider": provider.name,
+    "X-Layra-Model": provider.model,
+    "X-Layra-Latency-Ms": String(elapsedMs),
+    "Server-Timing": `vision;dur=${elapsedMs}`,
+  } });
 }
 
 function intersectionRatio(item: Detection, cover: Detection) {
@@ -488,6 +698,7 @@ function addMissingFocusedItems(items: Detection[], focusedItems: Detection[]) {
 }
 
 async function handlePOST(request: Request) {
+  const startedAt = performance.now();
   try {
     requireSession(request);
     const form = await request.formData();
@@ -499,63 +710,80 @@ async function handlePOST(request: Request) {
       return Response.json({ error: "识别图片不能超过 6MB" }, { status: 400 });
     }
 
-    const apiKey = requireServerEnv("DASHSCOPE_API_KEY");
-    const baseUrl = (getServerEnv("DASHSCOPE_BASE_URL") || "https://dashscope.aliyuncs.com/compatible-mode/v1").replace(/\/$/, "");
-    const model = getServerEnv("DASHSCOPE_VISION_MODEL") || "qwen3-vl-flash";
+    const dashscopeApiKey = getServerEnv("DASHSCOPE_API_KEY").trim();
+    const dashscopeProvider: DetectionProviderConfig | null = dashscopeApiKey ? {
+      name: "dashscope",
+      apiKey: dashscopeApiKey,
+      model: getServerEnv("DASHSCOPE_VISION_MODEL") || "qwen3-vl-flash",
+      baseUrl: (getServerEnv("DASHSCOPE_BASE_URL") || "https://dashscope.aliyuncs.com/compatible-mode/v1").replace(/\/$/, ""),
+    } : null;
     const arkApiKey = getServerEnv("ARK_API_KEY").trim();
     const arkVisionModel = getServerEnv("ARK_VISION_MODEL").trim();
-    const primaryProvider: DetectionProviderConfig = { name: "dashscope", baseUrl, apiKey, model };
-    // Ark model access is account-specific. An API key alone is insufficient:
-    // only enable the fallback when an authorized model/endpoint ID is explicit.
-    const arkFallback: DetectionProviderConfig | null = arkApiKey && arkVisionModel ? {
+    // Ark model access is account-specific. An API key alone is insufficient,
+    // so only select it when an authorized model ID is explicit.
+    const arkProvider: DetectionProviderConfig | null = arkApiKey && arkVisionModel ? {
       name: "volcengine-ark",
       apiKey: arkApiKey,
       model: arkVisionModel,
       baseUrl: (getServerEnv("ARK_BASE_URL") || defaultArkBaseUrl).replace(/\/$/, ""),
     } : null;
-    const imageData = `data:${image.type};base64,${toBase64(await image.arrayBuffer())}`;
-    const jsonRules = `类别只能是：上衣、外套、裤子、裙子、连衣裙、鞋子、帽子、腰带、包、首饰、其他配饰。衬衫、T恤、背心等必须归为上衣；领带、领结、围巾归为其他配饰。上下装必须分开，一双鞋合为一件。裤子与裙子是互斥判断，同一件阔腿裤或裙裤不能再重复输出成裙子。腰带必须是可独立取下的带身与扣头，外套自带系带、衣服装饰带和衬衫打结都不是独立腰带。只输出本图中真实存在、至少能确认品类和颜色的单品；衣服图案、手机、家具和背景物不要输出。拼图中同一单品重复出现时只保留最完整的一处。
-bbox_2d 使用 0到1000 的 [xmin,ymin,xmax,ymax]，只框物品本身。即使单品被人体或外套遮挡，只要仍可辨认也要输出，并如实填写 partially_occluded 与 visible_ratio。source_evidence 用10字内说明它在当前图片中的位置；identity_key 用颜色、品类和款式构成，同款重复必须相同。
-depiction_type 只能填写 worn、product 或 unknown；穿在人物身上、拿在手里或戴在身上的单品一律填写 worn，独立平铺或白底商品照才填写 product。
-garment_description 用50字内准确描述领型、袖型与袖长、衣长、版型、材质、图案或文字、关键口袋和五金，只描述目标单品，不描述人物。尤其要明确上衣是无袖、短袖还是长袖，裤装是否有破洞。
-只返回严格 JSON 数组，每项包含 category、color、bbox_2d、partially_occluded、confidence、visible_ratio、is_real_item:true、source_evidence、depiction_type、identity_key、garment_description，不要解释。`;
-    const outfitPrompt = `你是服饰入库质检员。按从头到脚的顺序扫描整张图片，识别一套穿搭中每件可单独入柜的真实单品。
-逐项检查：帽子；首饰；外套；内搭上衣；腰带；裤子、裙子或连衣裙；手提包或肩背包；左右脚上的一双鞋；其他可穿戴配饰。外套和露出的内搭是两件单品，不能因为重叠漏掉内搭。
-${jsonRules}`;
-    const detailPrompt = `你是全身穿搭查漏员。重新扫描整张图片，输出所有可单独入柜的真实单品，并重点查找第一次最容易漏掉的小件与画面边缘物品。
-必须依次确认头部帽子、颈部领带/领结/围巾、颈手部首饰、腰间独立腰带、肩背或手持包、脚部鞋履，同时也要完整输出上衣、外套和裤裙。不要因为单品较小、被手握住、被身体局部遮挡或靠近图片边缘就省略。
-${jsonRules}`;
+    const preferredProvider = getServerEnv("WARDROBE_VISION_PROVIDER").trim().toLowerCase();
+    const preferDashScope = preferredProvider === "dashscope";
+    const availableDashScope = dashscopeProvider && !detectionProviderIsCoolingDown(dashscopeProvider) ? dashscopeProvider : null;
+    const availableArk = arkProvider && !detectionProviderIsCoolingDown(arkProvider) ? arkProvider : null;
+    const primaryProvider = preferDashScope
+      ? availableDashScope || availableArk
+      : availableArk || availableDashScope;
+    if (!primaryProvider) {
+      throw new Error("服务端缺少 ARK_API_KEY/ARK_VISION_MODEL 或 DASHSCOPE_API_KEY 配置");
+    }
+    // Both configured domestic VLMs act as a recovery pair. The primary handles
+    // normal uploads; the secondary is called only for a provider rejection,
+    // timeout, or malformed structured result.
+    const fallbackCandidate = primaryProvider.name === "dashscope" ? availableArk : availableDashScope;
+    const fallbackProvider = fallbackCandidate && fallbackCandidate.name !== primaryProvider.name ? fallbackCandidate : null;
+    const imageBuffer = await image.arrayBuffer();
+    const cacheKey = await detectionCacheKey(imageBuffer, primaryProvider);
+    const cached = cachedDetections(cacheKey);
+    if (cached) return detectionResponse(cached, primaryProvider, "HIT", startedAt);
+    const imageData = `data:${image.type};base64,${toBase64(imageBuffer)}`;
+    const outfitPrompt = `从头到脚找出图中每件可独立入柜的真实单品。检查帽子、每件首饰、外套、内搭上衣、独立腰带、裤/裙/连衣裙、包、一双鞋、领带领结围巾。外套和内搭分开；一双鞋合一件；衬衫、T恤、背心等必须归为上衣；领带、领结、围巾归为其他配饰。腰带必须是可独立取下的带身与扣头，外套自带系带、衣服装饰带和衬衫打结都不是独立腰带。忽略图案、手机、家具和背景。被人体或外套遮挡但仍可辨认的单品也要输出。
+只返回 JSON 数组，无解释。每件严格用数组：[类别,颜色,[xmin,ymin,xmax,ymax],遮挡0或1,位置,d,款式]。坐标0到1000，只框物品本身；位置最多4字；款式最多8字，用颜色品类和款式区分同款重复。类别仅用上衣/外套/裤子/裙子/连衣裙/鞋子/帽子/腰带/包/首饰/其他配饰；d仅用w(穿戴)或p(独立商品图)。`;
 
-    // A full-outfit pass and an accessory-focused pass run together. Either
-    // successful result is useful, and the merge makes a single slow request
-    // incapable of collapsing the response to just a top.
+    // One compact pass is enough for normal photos. The old pair of concurrent
+    // full scans doubled both provider load and JSON output time.
     const scanStartedAt = performance.now();
-    const detectionRuns = await Promise.allSettled([
-      requestDetectionsWithFallback(primaryProvider, arkFallback, imageData, outfitPrompt),
-      requestDetectionsWithFallback(primaryProvider, arkFallback, imageData, detailPrompt),
-    ]);
-    let general = detectionRuns[0].status === "fulfilled" ? detectionRuns[0].value : [];
-    const focusedItems = detectionRuns[1].status === "fulfilled" ? detectionRuns[1].value : [];
-    if (!general.length && !focusedItems.length) {
+    let general: Detection[] = [];
+    let initialFailure: unknown;
+    try {
+      general = await requestDetectionsWithFallback(primaryProvider, fallbackProvider, imageData, outfitPrompt);
+    } catch (error) {
+      initialFailure = error;
       // The domestic VLM can reject a short burst immediately while a normal
-      // inference takes many seconds. Retry one comprehensive pass only for
-      // this fast-failure signature; never stack another long request after a
-      // genuine model timeout.
+      // inference takes several seconds. Retry only this fast-failure signature.
       const elapsedMs = performance.now() - scanStartedAt;
-      const hasBillingFailure = detectionRuns.some(result => result.status === "rejected" && isProviderBillingFailure(result.reason));
-      if (elapsedMs < 2_000 && !hasBillingFailure) {
-        await new Promise(resolve => setTimeout(resolve, 700));
-        const fallbackBudget = Math.max(3_000, Math.floor(25_500 - elapsedMs - 700));
+      if (elapsedMs < 2_000 && !isProviderBillingFailure(error)) {
+        await new Promise(resolve => setTimeout(resolve, 350));
+        const fallbackBudget = Math.max(3_000, Math.floor(15_500 - elapsedMs - 350));
         try {
-          general = await requestDetectionsWithFallback(primaryProvider, arkFallback, imageData, outfitPrompt, fallbackBudget);
+          general = await requestDetectionsWithFallback(primaryProvider, fallbackProvider, imageData, outfitPrompt, fallbackBudget);
         } catch {
-          // Preserve the original provider failure below for consistent API errors.
+          // Preserve the first provider failure below for consistent API errors.
         }
       }
     }
-    if (!general.length && !focusedItems.length) {
-      const failure = detectionRuns.find((result): result is PromiseRejectedResult => result.status === "rejected");
-      throw failure?.reason || new Error("没有识别到可入柜的单品");
+    if (!general.length) throw initialFailure || new Error("没有识别到可入柜的单品");
+
+    // A one-item answer on a full-outfit upload is the exact failure mode that
+    // previously dropped trousers, shoes and bags. Pay for an audit only then.
+    let focusedItems: Detection[] = [];
+    const auditBudget = Math.floor(16_000 - (performance.now() - scanStartedAt));
+    if (general.length === 1 && auditBudget >= 3_000) {
+      try {
+        focusedItems = await requestDetectionsWithFallback(primaryProvider, fallbackProvider, imageData, outfitPrompt, auditBudget);
+      } catch {
+        // The first valid item remains useful as a review draft.
+      }
     }
     const mergedScans = addMissingFocusedItems(general, focusedItems);
     const spatiallyUnique = deduplicateDetections(deduplicateIdentityGroups(mergedScans));
@@ -563,7 +791,8 @@ ${jsonRules}`;
     const detections = deduplicateIdentityGroups(deduplicateDetections(mergePairs(visibleItems)))
       .map((item, index) => ({ ...item, id: index + 1 }));
     if (!detections.length) throw new Error("没有识别到可入柜的单品");
-    return Response.json({ detections });
+    storeDetections(cacheKey, detections);
+    return detectionResponse(detections, primaryProvider, "MISS", startedAt);
   } catch (error) {
     const authResponse = responseForAuthError(error);
     if (authResponse) return authResponse;

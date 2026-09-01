@@ -70,7 +70,9 @@ const maxCacheBytes = 28 * 1024 * 1024;
 const providerWaiters: Array<() => void> = [];
 let cachedBytes = 0;
 let activeProviderRequests = 0;
-const maxConcurrentProviderRequests = 1;
+const defaultProviderConcurrency = 1;
+const defaultVolcengineProviderConcurrency = 2;
+const maxProviderConcurrency = 2;
 const providerRequestTimeoutMs = 35_000;
 const reconstructionDeadlineMs = 90_000;
 const aliyunAccountFailurePattern = /arrearage|invalid.?api.?key|invalid.?access.?key|unauthori[sz]ed|authentication|access.?denied|forbidden|no.?permission|insufficient.?balance|balance.?not.?enough|account.?(?:suspend|freeze)|billing/i;
@@ -159,7 +161,7 @@ function supportsQwenParameters(model: string) {
 }
 
 function resolveArkReconstructionSize() {
-  const configured = getServerEnv("ARK_GARMENT_RECONSTRUCTION_SIZE") || getServerEnv("ARK_IMAGE_SIZE");
+  const configured = getServerEnv("ARK_GARMENT_RECONSTRUCTION_SIZE");
   if (!configured) return DEFAULT_ARK_SIZE;
   if (["2K", "3K", "4K"].includes(configured.toUpperCase())) return configured.toUpperCase();
   const match = /^(\d{3,4})x(\d{3,4})$/i.exec(configured);
@@ -177,11 +179,21 @@ function supportsArkJpegOutput(model: string) {
   return /seedream-5-0-(?:pro|lite)(?:-|$)/i.test(model);
 }
 
+function configuredProviderConcurrency() {
+  const configured = Number(getServerEnv("GARMENT_RECONSTRUCTION_CONCURRENCY"));
+  if (Number.isInteger(configured) && configured > 0) {
+    return Math.min(maxProviderConcurrency, configured);
+  }
+  return getServerEnv("GARMENT_RECONSTRUCTION_PROVIDER").trim().toLowerCase() === "volcengine"
+    ? defaultVolcengineProviderConcurrency
+    : defaultProviderConcurrency;
+}
+
 async function withProviderSlot<T>(task: () => Promise<T>, maxWaitMs = reconstructionDeadlineMs) {
-  // The image-edit endpoint becomes much less reliable when a full outfit
-  // fans out into many simultaneous requests. Queue them and let cards finish
-  // one by one; the client already shows progressive previews.
-  if (activeProviderRequests >= maxConcurrentProviderRequests) {
+  // Keep a strict provider-specific ceiling: Seedream uses two lanes while the
+  // conservative fallback remains serial. This reduces batch wall time without
+  // allowing an unbounded full-outfit fan-out.
+  if (activeProviderRequests >= configuredProviderConcurrency()) {
     await new Promise<void>((resolve, reject) => {
       const grant = () => {
         clearTimeout(timeout);
@@ -479,7 +491,21 @@ function arkPayloadError(payload: ArkImagePayload) {
 }
 
 async function arkInputDataUrl(bytes: Buffer, maxEdge: number) {
-  const optimized = await sharp(bytes, { failOn: "none", limitInputPixels: 80_000_000 })
+  const source = sharp(bytes, { failOn: "none", limitInputPixels: 80_000_000 });
+  const metadata = await source.metadata();
+  // Browser preprocessing already produces orientation-free JPEGs at 1280px
+  // and 1024px. Re-encoding those exact inputs on every garment only adds CPU
+  // time and a larger payload, so forward them directly when they are ready.
+  if (
+    metadata.format === "jpeg"
+    && !metadata.orientation
+    && Number(metadata.width) > 0
+    && Number(metadata.height) > 0
+    && Math.max(Number(metadata.width), Number(metadata.height)) <= maxEdge
+  ) {
+    return `data:image/jpeg;base64,${bytes.toString("base64")}`;
+  }
+  const optimized = await source
     .rotate()
     .resize({ width: maxEdge, height: maxEdge, fit: "inside", withoutEnlargement: true })
     .flatten({ background: "#ffffff" })
@@ -608,6 +634,13 @@ async function requestArkReconstruction(input: ReconstructionRequest, deadlineAt
 async function requestReconstruction(input: ReconstructionRequest) {
   const startedAt = performance.now();
   const deadlineAt = startedAt + reconstructionDeadlineMs;
+  // Do not probe a known-unavailable provider on every garment. Projects that
+  // use Volcengine for wardrobe AI can route straight to Seedream and save an
+  // avoidable rejected request before each generation.
+  const preferredProvider = getServerEnv("GARMENT_RECONSTRUCTION_PROVIDER").trim().toLowerCase();
+  if (preferredProvider === "volcengine" && getServerEnv("ARK_API_KEY")) {
+    return requestArkReconstruction(input, deadlineAt);
+  }
   try {
     return await requestAliyunReconstruction(input, deadlineAt);
   } catch (error) {

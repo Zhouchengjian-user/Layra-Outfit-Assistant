@@ -35,7 +35,7 @@ async function productCacheKey(
   api: string,
   geometry: string,
 ) {
-  const prefix = new TextEncoder().encode(`layra-segment-v6\n${api}\n${geometry}\n${category}\n${color}\n`);
+  const prefix = new TextEncoder().encode(`layra-segment-v7\n${api}\n${geometry}\n${category}\n${color}\n`);
   const bytes = new Uint8Array(prefix.length + buffer.byteLength);
   bytes.set(prefix);
   bytes.set(new Uint8Array(buffer), prefix.length);
@@ -143,7 +143,7 @@ async function handlePOST(request: Request) {
     const sourceBuffer = await image.arrayBuffer();
     const cutoutMode = configuredGarmentCutoutMode();
     const cacheHash = await productCacheKey(sourceBuffer, category, color, api, `${geometryKey}:${cutoutMode}`);
-    const cacheBase = `product-cache/segment-v6/${cacheHash}`;
+    const cacheBase = `product-cache/segment-v7/${cacheHash}`;
     const cached = productCache.get(cacheBase);
     if (cached) {
       productCache.delete(cacheBase);

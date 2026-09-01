@@ -321,6 +321,7 @@ function YidaApp() {
   }, []);
 
   const tryOnCacheKey = useCallback((itemIds: string[]) => [
+    "source-frame-v4",
     modelProfile?.updatedAt || 0,
     [...itemIds].sort().join("|"),
     scene,
@@ -1745,6 +1746,8 @@ function GarmentDraftCard({
           : "";
   const providerLabel = draft.cutoutProvider === "comfyui-birefnet"
     ? "本地 ComfyUI"
+    : draft.cutoutProvider === "volcengine-imagex-productv2"
+      ? "ImageX 商品模型"
     : draft.cutoutProvider === "aliyun-viapi"
       ? "云端抠图"
       : "";

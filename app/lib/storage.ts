@@ -5,6 +5,7 @@ import {
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { getStorageRequestContext } from "./storage-request-context";
@@ -159,6 +160,22 @@ export async function storageDelete(key: string): Promise<void> {
   const filePath = localPath(key);
   if (existsSync(filePath)) rmSync(filePath);
   if (existsSync(metaPath(key))) rmSync(metaPath(key));
+}
+
+/**
+ * 为私有 TOS 对象生成短时读取地址。
+ *
+ * 只有远程对象存储才能产生供第三方图像服务访问的地址；本地开发
+ * 存储返回 null，调用方应该降级到本地或其他云端能力。
+ */
+export async function storageCreateSignedGetUrl(key: string, expiresInSeconds = 300): Promise<string | null> {
+  if (!isS3()) return null;
+  const expiresIn = Math.max(60, Math.min(900, Math.round(expiresInSeconds)));
+  return withS3Client(client => getSignedUrl(
+    client,
+    new GetObjectCommand({ Bucket: bucketName(), Key: key }),
+    { expiresIn },
+  ));
 }
 
 /** 判断对象是否存在。 */
