@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <meta name="theme-color" content="#f4eeec" />
+    <meta name="description" content="易搭 AI 穿搭助手完整产品演示视频" />
+    <title>易搭 AI 穿搭助手 · 完整产品演示</title>
+    <style>
+      :root {
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        color: #231f20;
+        background: #f4eeec;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        min-height: 100vh;
+        margin: 0;
+        display: grid;
+        place-items: center;
+        padding: 32px 18px;
+        background:
+          radial-gradient(circle at 15% 10%, rgba(255, 255, 255, 0.96), transparent 32%),
+          linear-gradient(145deg, #f8f4f2, #e8ddda);
+      }
+
+      main {
+        width: min(1120px, 100%);
+      }
+
+      header {
+        display: flex;
+        align-items: end;
+        justify-content: space-between;
+        gap: 24px;
+        margin-bottom: 18px;
+      }
+
+      p,
+      h1 {
+        margin: 0;
+      }
+
+      .eyebrow {
+        margin-bottom: 7px;
+        color: #9b6975;
+        font-size: 12px;
+        font-weight: 750;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+      }
+
+      h1 {
+        font-size: clamp(26px, 4vw, 46px);
+        letter-spacing: -0.04em;
+      }
+
+      .download {
+        flex: 0 0 auto;
+        color: #6f4550;
+        font-size: 14px;
+        font-weight: 700;
+        text-decoration: none;
+      }
+
+      .download:hover {
+        text-decoration: underline;
+      }
+
+      .player {
+        overflow: hidden;
+        border: 1px solid rgba(66, 43, 48, 0.1);
+        border-radius: 24px;
+        background: #1d191a;
+        box-shadow: 0 24px 70px rgba(70, 47, 53, 0.18);
+      }
+
+      video {
+        display: block;
+        width: 100%;
+        aspect-ratio: 16 / 9;
+        background: #1d191a;
+      }
+
+      .hint {
+        margin-top: 14px;
+        color: #74696b;
+        font-size: 13px;
+        line-height: 1.7;
+      }
+
+      @media (max-width: 640px) {
+        body {
+          padding: 20px 12px;
+        }
+
+        header {
+          align-items: start;
+          flex-direction: column;
+          gap: 10px;
+        }
+
+        .player {
+          border-radius: 14px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <p class="eyebrow">LAYRA PRODUCT FILM</p>
+          <h1>易搭 AI 穿搭助手</h1>
+        </div>
+        <a class="download" href="yida-product-demo.mp4" download>下载完整视频</a>
+      </header>
+
+      <section class="player" aria-label="易搭 AI 穿搭助手产品演示视频">
+        <video controls playsinline preload="metadata" poster="yida-product-demo-cover.png">
+          <source src="yida-product-demo.mp4" type="video/mp4" />
+          当前浏览器无法播放该视频，请使用页面上方的下载链接。
+        </video>
+      </section>
+
+      <p class="hint">如果微信内置浏览器限制播放，请选择在系统浏览器中打开。</p>
+    </main>
+  </body>
+</html>

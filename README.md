@@ -6,9 +6,9 @@
 
 [
   ![易搭 AI 穿搭助手产品演示](docs/demo/yida-product-demo-cover.png)
-](docs/demo/yida-product-demo.mp4)
+](https://zhouchengjian-user.github.io/YIDA/demo/)
 
-> 点击封面播放或下载完整演示视频。
+> [在线播放完整演示视频](https://zhouchengjian-user.github.io/YIDA/demo/) · [下载原始视频](docs/demo/yida-product-demo.mp4)
 
 ## 当前能力
 
