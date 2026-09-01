@@ -77,13 +77,14 @@ test("生产可观测性：Sentry 仅在配置 DSN 后启用且默认保护隐�
   assert.equal(JSON.parse(pkg).dependencies["@sentry/nextjs"], "10.70.0");
 });
 
-test("首页输入提示条保持动态，并尊重减少动态效果设置", async () => {
-  const styles = await read("../app/globals.css");
+test("首页使用真实穿搭图，并尊重减少动态效果设置", async () => {
+  const [page, styles] = await Promise.all([read("../app/page.tsx"), read("../app/globals.css")]);
 
-  assert.match(styles, /@media \(prefers-reduced-motion: no-preference\)/);
-  assert.match(styles, /animation: inputSignal var\(--signal-speed\)/);
-  assert.match(styles, /@keyframes inputSignal/);
-  assert.match(styles, /animation: none !important; transform: scaleY\(\.45\)/);
+  assert.match(page, /home-featured-look/);
+  assert.match(page, /currentInspirationThemes\.slice\(0, 3\)/);
+  assert.doesNotMatch(page, /ai-home-atmosphere|input-signal/);
+  assert.match(styles, /@media \(prefers-reduced-motion: reduce\)/);
+  assert.match(styles, /\.home-featured-look img/);
 });
 
 test("业务逻辑保留：第一阶段衣柜工作流", async () => {

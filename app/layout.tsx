@@ -2,11 +2,11 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "LAYRA · AI 穿搭助手",
-  description: "读懂天气、场合和你的个人衣柜，每天搭出刚刚好的样子。",
+  title: "LAYRA 穿搭助手",
+  description: "从你的衣柜出发，根据天气和场合给出每天都能穿的搭配。",
   openGraph: {
-    title: "LAYRA · AI 穿搭助手",
-    description: "每天穿什么，交给你的衣柜。",
+    title: "LAYRA 穿搭助手",
+    description: "从自己的衣柜开始，找到今天真正会穿的一套。",
   },
 };
 

@@ -296,7 +296,6 @@ function YidaApp() {
   const [chatTyping, setChatTyping] = useState(false);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([{ role: "assistant", text: "三套都来自你的衣柜。想换颜色、鞋子或调整正式程度，直接告诉我。" }]);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
-  const homeStageRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const modelFileRef = useRef<HTMLInputElement>(null);
   const uploadModeRef = useRef<"replace" | "append">("replace");
@@ -572,31 +571,6 @@ function YidaApp() {
     if (tryOnQuickUrlRef.current) URL.revokeObjectURL(tryOnQuickUrlRef.current);
     tryOnCacheRef.current.forEach(url => URL.revokeObjectURL(url));
   }, []);
-
-  useEffect(() => {
-    if (tab !== "home") return;
-    const stage = homeStageRef.current;
-    if (!stage) return;
-    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    const finePointer = window.matchMedia("(hover: hover) and (pointer: fine)").matches;
-    if (reduceMotion || !finePointer) return;
-    let frame = 0;
-    const updateLight = (event: PointerEvent) => {
-      window.cancelAnimationFrame(frame);
-      frame = window.requestAnimationFrame(() => {
-        const bounds = stage.getBoundingClientRect();
-        const x = Math.max(0, Math.min(100, ((event.clientX - bounds.left) / bounds.width) * 100));
-        const y = Math.max(0, Math.min(100, ((event.clientY - bounds.top) / bounds.height) * 100));
-        stage.style.setProperty("--home-pointer-x", `${x}%`);
-        stage.style.setProperty("--home-pointer-y", `${y}%`);
-      });
-    };
-    stage.addEventListener("pointermove", updateLight, { passive: true });
-    return () => {
-      window.cancelAnimationFrame(frame);
-      stage.removeEventListener("pointermove", updateLight);
-    };
-  }, [tab]);
 
   useEffect(() => () => {
     tryOnCacheRef.current.forEach(url => URL.revokeObjectURL(url));
@@ -1473,12 +1447,29 @@ function YidaApp() {
     : `使用 ${activeItems.length} 件独立白底单品，不会混入我的衣柜`;
   const closetSetup = (
     <section className="home-source-setup" aria-label="衣柜快捷入口">
+      <header className="home-source-heading">
+        <div><b>搭配来源</b><span>{closetSourceLabel}</span></div>
+        <p>{closetSourceDetail}</p>
+      </header>
       <div className="home-source-options">
-        <button type="button" className="home-source-option source-own" onClick={() => openUploadPicker("replace")}><span className="source-option-icon"><Icon name="wardrobe" /></span><span><b>上传我的衣柜</b><small>拍照或选图，自动拆分成单件商品图</small></span><em>去上传 <Icon name="arrow" /></em></button>
-        <button type="button" className="home-source-option source-demo" onClick={openStarterPicker} disabled={starterLoading} aria-busy={starterLoading}><span className="source-option-icon"><Icon name="spark" /></span><span><b>体验虚拟衣柜</b><small>女装、男装各 {STARTER_WARDROBE_SIZE_PER_GENDER} 件白底单品，随时切换</small></span><em>{starterLoading ? "正在准备" : activeCloset === "own" ? "立即体验" : "切换衣柜"} <Icon name="arrow" /></em></button>
+        <button type="button" className={`home-source-option source-own ${activeCloset === "own" ? "is-current" : ""}`} onClick={() => openUploadPicker("replace")}><span className="source-option-icon"><Icon name="wardrobe" /></span><span><b>我的真实衣柜</b><small>上传照片，自动整理成单件衣物</small></span><em>{activeCloset === "own" ? "当前使用" : "去上传"}</em></button>
+        <button type="button" className={`home-source-option source-demo ${activeCloset !== "own" ? "is-current" : ""}`} onClick={openStarterPicker} disabled={starterLoading} aria-busy={starterLoading}><span className="source-option-icon"><Icon name="gallery" /></span><span><b>体验虚拟衣柜</b><small>女装、男装各 {STARTER_WARDROBE_SIZE_PER_GENDER} 件白底单品，可直接体验</small></span><em>{starterLoading ? "正在准备" : activeCloset === "own" ? "选择" : "切换"}</em></button>
       </div>
     </section>
   );
+  const renderHomeInspiration = () => {
+    const featuredLooks = currentInspirationThemes.slice(0, 3);
+    return <aside className="home-inspiration-panel" aria-label="今日穿搭灵感">
+      <header><div><span>今日灵感</span><h2>先看感觉，再做选择</h2></div><button type="button" onClick={() => setTab("inspiration")}>查看全部</button></header>
+      <button type="button" className="home-featured-look" onClick={() => setTab("inspiration")}>
+        <img src={featuredLooks[0].imageUrl} alt={featuredLooks[0].title} />
+      </button>
+      <div className="home-look-copy"><b>{featuredLooks[0].title}</b><p>{featuredLooks[0].desc}</p></div>
+      <div className="home-look-thumbnails">
+        {featuredLooks.slice(1).map(look => <button type="button" key={look.id} onClick={() => setTab("inspiration")}><img src={look.imageUrl} alt={look.title} /><span>{look.title}</span></button>)}
+      </div>
+    </aside>;
+  };
   const resultsBlock = (
     <Results
       scene={scene} scope={scope} recommendations={recommendations} intent={outfitIntent}
@@ -1490,17 +1481,17 @@ function YidaApp() {
   );
 
   const mobileHome = (
-    <div className="screen home-screen mobile-home ai-mobile-home">
-      <div className="mobile-home-atmosphere" aria-hidden="true"><i /><i /><i /></div>
-      <header className="app-header ai-mobile-header"><div className="mobile-brand"><span className="mobile-brand-mark"><LayraMark /></span><div><span className="micro-label">LAYRA · DAILY STYLING</span><h2><span>LAYRA</span>，最懂你的穿搭助手。</h2><p className="mobile-home-subtitle">告诉它今天的安排和心情，剩下的搭配交给它。</p></div></div><button className="avatar" onClick={() => setTab("profile")}>{profile.nickname.slice(0, 1)}</button></header>
+    <div className="screen home-screen mobile-home product-mobile-home">
+      <header className="app-header product-mobile-header"><div className="mobile-brand"><span className="mobile-brand-mark"><LayraMark /></span><div><span className="mobile-wordmark">LAYRA</span><h2>今天穿什么？</h2><p className="mobile-home-subtitle">从你的衣柜开始搭配。</p></div></div><button className="avatar" aria-label="打开个人中心" onClick={() => setTab("profile")}>{profile.nickname.slice(0, 1)}</button></header>
       <section className={`prompt-card mobile-ai-command ${prompt ? "has-prompt" : ""}`}>
-        <header className="mobile-command-head"><span><Icon name="spark" /><b>和 LAYRA 对话</b></span><button className="mobile-command-weather" onClick={() => setShowWeather(true)}>{city} {weather.temperature}°</button></header>
+        <header className="mobile-command-head"><span><b>写下今天的安排</b></span><button className="mobile-command-weather" onClick={() => setShowWeather(true)}>{city} {weather.temperature}°</button></header>
         <div className="scene-row mobile-scene-switch"><span>场景</span>{scenes.map(item => <button key={item} className={scene === item ? "active" : ""} onClick={() => setScene(item)}>{item}</button>)}</div>
-        <div className="mobile-prompt-field"><textarea value={prompt} onChange={event => setPrompt(event.target.value)} placeholder={prompts[promptIndex]} aria-label="输入穿搭需求" /><span className="mobile-input-spark" aria-hidden="true"><i /><i /><i /></span></div>
-        <div className="mobile-prompt-starters">{promptStarters.map(item => <button key={item} onClick={() => setPrompt(item)}>↗ {item}</button>)}</div>
-        <div className={`mobile-composer-foot ${!activeItems.length ? "is-source-empty" : ""}`}>{activeItems.length > 0 && <div className="mobile-source-summary"><span><small>搭配来源</small><b>{closetSourceLabel}</b></span><button onClick={openStarterPicker}>切换</button></div>}<button className="generate-button" onClick={generateLooks} disabled={loading || !activeItems.length}>{loading ? <><span className="spinner" />搭配中</> : <>生成3套 <Icon name="arrow" /></>}</button></div>
+        <div className="mobile-prompt-field"><textarea value={prompt} onChange={event => setPrompt(event.target.value)} placeholder={prompts[promptIndex]} aria-label="输入穿搭需求" /></div>
+        <div className="mobile-prompt-starters">{promptStarters.map(item => <button key={item} onClick={() => setPrompt(item)}>{item}</button>)}</div>
+        <div className={`mobile-composer-foot ${!activeItems.length ? "is-source-empty" : ""}`}>{activeItems.length > 0 && <div className="mobile-source-summary"><span><small>当前衣柜</small><b>{closetSourceLabel}</b></span><button onClick={openStarterPicker}>切换</button></div>}<button className="generate-button" onClick={generateLooks} disabled={loading || !activeItems.length}>{loading ? <><span className="spinner" />搭配中</> : <>生成 3 套<Icon name="arrow" /></>}</button></div>
       </section>
       {closetSetup}
+      {renderHomeInspiration()}
       {starterLoading && <section className="starter-progress-mobile"><span className="spinner" /> 正在准备示例衣柜…</section>}
       {loading && <Thinking phase={recommendationPhase} />}
       <div className="results-anchor" />
@@ -1538,22 +1529,23 @@ function YidaApp() {
 
       <header className="desktop-topbar">
         <div className="topbar-title"><span>{tab === "home" ? "今日搭配" : tab === "wardrobe" ? "我的衣柜" : tab === "create" ? "个人搭配" : tab === "inspiration" ? "灵感画廊" : tab === "saved" ? "收藏搭配" : "个人中心"}</span></div>
-        <div className="topbar-meta"><button className="weather-pill" onClick={() => setShowWeather(true)}>☁ {weather.temperature}° {city}</button><button className="points-pill" onClick={() => setTab("profile")}>今日剩余 {generationsLeft} 次</button><button className="side-avatar" onClick={() => setTab("profile")}>{profile.nickname.slice(0, 1)}</button></div>
+        <div className="topbar-meta"><button className="weather-pill" onClick={() => setShowWeather(true)}>{weather.temperature}° {city}</button><button className="points-pill" onClick={() => setTab("profile")}>今日剩余 {generationsLeft} 次</button><button className="side-avatar" aria-label="打开个人中心" onClick={() => setTab("profile")}>{profile.nickname.slice(0, 1)}</button></div>
       </header>
 
       <section className="studio-surface" id="main-workspace">
-        {tab === "home" && <><div ref={homeStageRef} className="desktop-home chat-home ai-home-v2" data-scene={scene}>
-          <div className="ai-home-atmosphere" aria-hidden="true"><span className="fabric-light fabric-light-a" /><span className="fabric-light fabric-light-b" /><span className="thread-orbit thread-orbit-a" /><span className="thread-orbit thread-orbit-b" /><i className="signal-node signal-node-a" /><i className="signal-node signal-node-b" /><i className="signal-node signal-node-c" /></div>
-          <div className="ai-home-content">
-            <div className="hero-copy ai-home-intro"><span className="mode-pill"><i /> LAYRA · DAILY STYLING SESSION</span><h1><em>LAYRA</em>，最懂你的穿搭助手。</h1><p>告诉它今天的安排和心情，剩下的搭配交给它。</p></div>
+        {tab === "home" && <><div className="desktop-home chat-home product-home" data-scene={scene}>
+          <div className="product-home-grid">
+          <div className="ai-home-content product-home-workspace">
+            <div className="hero-copy ai-home-intro"><h1>今天穿什么？</h1><p>说清场合和想要的感觉，Layra 会从你的衣柜给出三套选择。</p></div>
             <section className={`studio-composer ai-command-card ${prompt ? "has-prompt" : ""}`}>
               <div className="ai-scene-control"><span>使用场景</span><div>{scenes.map(item => <button key={item} className={scene === item ? "active" : ""} onClick={() => setScene(item)}>{item}</button>)}</div></div>
-              <div className="ai-prompt-field"><textarea value={prompt} onChange={event => setPrompt(event.target.value)} placeholder={prompts[promptIndex]} aria-label="描述今天想要的穿搭" /><span className="input-signal" aria-hidden="true"><i /><i /><i /><i /></span></div>
-              <div className="ai-composer-actions"><div className="ai-prompt-starters">{promptStarters.map(item => <button key={item} onClick={() => setPrompt(item)}><span>↗</span>{item}</button>)}</div><div className="ai-generate-zone"><small>今日还可生成 {generationsLeft} 次</small><button className="primary-generate" onClick={generateLooks} disabled={loading || !activeItems.length}>{loading ? <><span className="spinner" />正在搭配</> : <>生成3套搭配<Icon name="arrow" /></>}</button></div></div>
-              {activeItems.length > 0 && <footer className="ai-command-foot"><div className="ai-outfit-source"><Icon name="wardrobe" /><span><small>搭配来源</small><b>{closetSourceLabel}</b><em>{closetSourceDetail}</em></span><button onClick={openStarterPicker}>切换来源</button></div></footer>}
+              <div className="ai-prompt-field"><textarea value={prompt} onChange={event => setPrompt(event.target.value)} placeholder={prompts[promptIndex]} aria-label="描述今天想要的穿搭" /></div>
+              <div className="ai-composer-actions"><div className="ai-prompt-starters">{promptStarters.map(item => <button key={item} onClick={() => setPrompt(item)}>{item}</button>)}</div><div className="ai-generate-zone"><small>今日剩余 {generationsLeft} 次</small><button className="primary-generate" onClick={generateLooks} disabled={loading || !activeItems.length}>{loading ? <><span className="spinner" />正在搭配</> : <>生成 3 套<Icon name="arrow" /></>}</button></div></div>
             </section>
+            {closetSetup}
           </div>
-          {closetSetup}
+          {renderHomeInspiration()}
+          </div>
           {starterLoading && <section className="home-readiness"><span className="spinner" /> 正在准备示例衣柜…</section>}
           {loading && <Thinking phase={recommendationPhase} />}
           <div className="results-anchor" />
