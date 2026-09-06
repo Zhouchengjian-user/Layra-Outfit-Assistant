@@ -3,7 +3,7 @@
 /* Dynamic R2 and user-uploaded image URLs cannot use a fixed Next Image loader. */
 /* eslint-disable @next/next/no-img-element */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type SyntheticEvent } from "react";
 import { processGarmentUpload, type ProcessedGarmentImage } from "./lib/garment-image";
 import { garmentTagLabels, type GarmentAITags } from "./lib/garment-tags";
 import { ApiError, createIdempotencyKey, requestJson } from "./lib/api-client";
@@ -22,6 +22,7 @@ import {
 import { AuthGate, useAuth } from "./components/auth-gate";
 import { LayraMark } from "./components/layra-mark";
 import { ModalFrame } from "./components/modal-frame";
+import { WardrobeCarousel } from "./components/wardrobe-carousel";
 import { STARTER_WARDROBE_SIZE_PER_GENDER } from "./lib/starter-wardrobe-config";
 
 type Tab = "home" | "wardrobe" | "create" | "inspiration" | "saved" | "profile";
@@ -52,6 +53,15 @@ type SavedOutfit = {
 };
 type HistoryEntry = { id: string; scene: string; prompt: string; result: unknown; createdAt: number };
 type TryOnContext = { itemIds: string[]; title: string; scene: string; recommendationId?: string };
+
+const transparentImageFallback = "data:image/gif;base64,R0lGODlhAQABAAAAACw=";
+
+function hideUnavailableImage(event: SyntheticEvent<HTMLImageElement>) {
+  const image = event.currentTarget;
+  image.onerror = null;
+  image.src = transparentImageFallback;
+  image.classList.add("image-fallback");
+}
 
 function outfitItemFromWardrobe(item: WardrobeItem): OutfitRecommendation["items"][number] {
   return {
@@ -129,8 +139,6 @@ function parseSwapCategory(text: string): string | null {
 }
 
 const scenes: Scene[] = ["通勤", "约会", "休闲", "聚会", "运动", "正式活动"];
-const prompts = ["帮我推荐今日穿搭", "今天想穿得松弛又精神", "晚上的约会怎么穿？", "帮我搭一套显比例的通勤装", "明天上班想穿得舒服又有精神", "约会想穿得温柔一点", "通勤但不要太正式", "下雨天也要显比例"];
-const promptStarters = ["舒服又精神", "约会温柔一点", "通勤但不太正式"];
 const styleOptions = ["简约", "松弛感", "轻复古", "通勤", "运动", "甜酷"];
 const lastRecommendationTaskKey = "yida:last-recommendation-task";
 const lastVisualizationTaskKey = "yida:last-visualization-task";
@@ -221,7 +229,7 @@ function BottomNav({ tab, setTab }: { tab: Tab; setTab: (tab: Tab) => void }) {
 function ModelProfileStrip({ profile, uploading, onUpload }: { profile: ModelProfile | null; uploading: boolean; onUpload: () => void }) {
   return <section className={`model-profile-strip ${profile ? "is-ready" : ""}`}>
     <button className="model-profile-preview" onClick={onUpload} aria-label={profile ? "更换个人全身照" : "上传个人全身照"}>
-      {profile ? <img src={profile.imageUrl} alt="我的个人模特全身照" /> : <span>＋</span>}
+      {profile ? <img src={profile.imageUrl} alt="我的个人模特全身照" onError={hideUnavailableImage} /> : <span>＋</span>}
     </button>
     <div><span className="micro-label">MY AI MODEL</span><b>{profile ? "个人模特已准备好" : "先建立你的个人模特"}</b><small>{profile ? "推荐完成后，可直接生成你穿上这套的完整效果图" : "上传一张正面、从头到脚完整入镜的全身照"}</small></div>
     <button className="model-upload-action" disabled={uploading} onClick={onUpload}>{uploading ? "正在保存…" : profile ? "更换照片" : "上传全身照"}</button>
@@ -231,8 +239,8 @@ function ModelProfileStrip({ profile, uploading, onUpload }: { profile: ModelPro
 function YidaApp() {
   const { logout } = useAuth();
   const [tab, setTab] = useState<Tab>("home");
-  const [promptIndex, setPromptIndex] = useState(0);
   const [prompt, setPrompt] = useState("");
+  const [homeRatio, setHomeRatio] = useState<"1:1" | "3:4" | "9:16">("3:4");
   const [scene, setScene] = useState<Scene>("通勤");
   const scope: Scope = "仅个人衣柜";
   const [showResults, setShowResults] = useState(false);
@@ -561,11 +569,6 @@ function YidaApp() {
     }
   };
 
-  useEffect(() => {
-    const timer = setInterval(() => setPromptIndex(current => { let next = Math.floor(Math.random() * prompts.length); if (next === current) next = (next + 1) % prompts.length; return next; }), 3000);
-    return () => clearInterval(timer);
-  }, []);
-
   useEffect(() => () => {
     tryOnPreviewJobRef.current = "";
     if (tryOnQuickUrlRef.current) URL.revokeObjectURL(tryOnQuickUrlRef.current);
@@ -674,7 +677,7 @@ function YidaApp() {
     setOutfitIntent(payload.intent || null);
     setSelectedRecommendationId(null);
     setShowResults(true);
-    window.setTimeout(() => document.querySelector(".results-anchor")?.scrollIntoView({ behavior: "smooth", block: "start" }), 60);
+    window.setTimeout(() => document.querySelector(".results-anchor")?.scrollIntoView({ behavior: "smooth", block: "nearest" }), 60);
   }, [replaceTryOnQuickUrl]);
 
   useEffect(() => {
@@ -1442,34 +1445,6 @@ function YidaApp() {
     notify("已记录这批偏好，换一批看看");
   };
   const closetSourceLabel = activeCloset === "own" ? "我的衣柜" : activeCloset === "female" ? "女生虚拟衣柜" : "男生虚拟衣柜";
-  const closetSourceDetail = activeCloset === "own"
-    ? (activeItems.length ? `从你上传的 ${activeItems.length} 件衣物中搭配` : "只使用你自己上传的衣物")
-    : `使用 ${activeItems.length} 件独立白底单品，不会混入我的衣柜`;
-  const closetSetup = (
-    <section className="home-source-setup" aria-label="衣柜快捷入口">
-      <header className="home-source-heading">
-        <div><b>搭配来源</b><span>{closetSourceLabel}</span></div>
-        <p>{closetSourceDetail}</p>
-      </header>
-      <div className="home-source-options">
-        <button type="button" className={`home-source-option source-own ${activeCloset === "own" ? "is-current" : ""}`} onClick={() => openUploadPicker("replace")}><span className="source-option-icon"><Icon name="wardrobe" /></span><span><b>我的真实衣柜</b><small>上传照片，自动整理成单件衣物</small></span><em>{activeCloset === "own" ? "当前使用" : "去上传"}</em></button>
-        <button type="button" className={`home-source-option source-demo ${activeCloset !== "own" ? "is-current" : ""}`} onClick={openStarterPicker} disabled={starterLoading} aria-busy={starterLoading}><span className="source-option-icon"><Icon name="gallery" /></span><span><b>体验虚拟衣柜</b><small>女装、男装各 {STARTER_WARDROBE_SIZE_PER_GENDER} 件白底单品，可直接体验</small></span><em>{starterLoading ? "正在准备" : activeCloset === "own" ? "选择" : "切换"}</em></button>
-      </div>
-    </section>
-  );
-  const renderHomeInspiration = () => {
-    const featuredLooks = currentInspirationThemes.slice(0, 3);
-    return <aside className="home-inspiration-panel" aria-label="今日穿搭灵感">
-      <header><div><span>今日灵感</span><h2>先看感觉，再做选择</h2></div><button type="button" onClick={() => setTab("inspiration")}>查看全部</button></header>
-      <button type="button" className="home-featured-look" onClick={() => setTab("inspiration")}>
-        <img src={featuredLooks[0].imageUrl} alt={featuredLooks[0].title} />
-      </button>
-      <div className="home-look-copy"><b>{featuredLooks[0].title}</b><p>{featuredLooks[0].desc}</p></div>
-      <div className="home-look-thumbnails">
-        {featuredLooks.slice(1).map(look => <button type="button" key={look.id} onClick={() => setTab("inspiration")}><img src={look.imageUrl} alt={look.title} /><span>{look.title}</span></button>)}
-      </div>
-    </aside>;
-  };
   const resultsBlock = (
     <Results
       scene={scene} scope={scope} recommendations={recommendations} intent={outfitIntent}
@@ -1480,19 +1455,60 @@ function YidaApp() {
     />
   );
 
-  const mobileHome = (
-    <div className="screen home-screen mobile-home product-mobile-home">
-      <header className="app-header product-mobile-header"><div className="mobile-brand"><span className="mobile-brand-mark"><LayraMark /></span><div><span className="mobile-wordmark">LAYRA</span><h2>今天穿什么？</h2><p className="mobile-home-subtitle">从你的衣柜开始搭配。</p></div></div><button className="avatar" aria-label="打开个人中心" onClick={() => setTab("profile")}>{profile.nickname.slice(0, 1)}</button></header>
-      <section className={`prompt-card mobile-ai-command ${prompt ? "has-prompt" : ""}`}>
-        <header className="mobile-command-head"><span><b>写下今天的安排</b></span><button className="mobile-command-weather" onClick={() => setShowWeather(true)}>{city} {weather.temperature}°</button></header>
-        <div className="scene-row mobile-scene-switch"><span>场景</span>{scenes.map(item => <button key={item} className={scene === item ? "active" : ""} onClick={() => setScene(item)}>{item}</button>)}</div>
-        <div className="mobile-prompt-field"><textarea value={prompt} onChange={event => setPrompt(event.target.value)} placeholder={prompts[promptIndex]} aria-label="输入穿搭需求" /></div>
-        <div className="mobile-prompt-starters">{promptStarters.map(item => <button key={item} onClick={() => setPrompt(item)}>{item}</button>)}</div>
-        <div className={`mobile-composer-foot ${!activeItems.length ? "is-source-empty" : ""}`}>{activeItems.length > 0 && <div className="mobile-source-summary"><span><small>当前衣柜</small><b>{closetSourceLabel}</b></span><button onClick={openStarterPicker}>切换</button></div>}<button className="generate-button" onClick={generateLooks} disabled={loading || !activeItems.length}>{loading ? <><span className="spinner" />搭配中</> : <>生成 3 套<Icon name="arrow" /></>}</button></div>
+  const heroLooks = currentInspirationThemes.slice(0, 6);
+  const referenceHome = (
+    <div className={`reference-home ${starterLoading || loading || showResults ? "has-output" : ""}`}>
+      <header className="reference-mobile-bar"><button type="button" onClick={() => setTab("home")}><span><LayraMark /></span><b>LAYRA</b></button><button type="button" className="side-avatar" aria-label="打开个人中心" onClick={() => setTab("profile")}>{profile.nickname.slice(0, 1)}</button></header>
+      <section className="reference-hero" aria-labelledby="layra-home-title">
+        <div className="reference-hero-copy">
+          <h1 id="layra-home-title">Layra<br className="reference-mobile-break" /><span className="reference-title-space"> </span>智能穿搭工作室</h1>
+          <p>上传你的照片和衣服，从真实衣柜生成每天能穿的搭配。</p>
+          <button type="button" onClick={() => document.querySelector<HTMLTextAreaElement>(".reference-prompt-field textarea")?.focus()}>立即开始搭配 <Icon name="arrow" /></button>
+        </div>
+        <div className="reference-look-ribbon" aria-label="Layra 穿搭效果示例">
+          {heroLooks.map((look, index) => <figure key={look.id} style={{ "--look-index": index } as React.CSSProperties}><img src={look.imageUrl} alt={look.title} /></figure>)}
+        </div>
       </section>
-      {closetSetup}
-      {renderHomeInspiration()}
-      {starterLoading && <section className="starter-progress-mobile"><span className="spinner" /> 正在准备示例衣柜…</section>}
+
+      <section className="reference-editor" id="layra-studio" aria-label="Layra 智能穿搭设置">
+        <div className="reference-scene-row reference-scene-row-top">
+          <span>使用场景</span>
+          <div>{scenes.map(item => <button type="button" key={item} className={scene === item ? "active" : ""} onClick={() => setScene(item)}>{item}</button>)}</div>
+          <button type="button" className="reference-scene-reset" onClick={() => { setPrompt(""); setScene("通勤"); }}>重新开始</button>
+        </div>
+
+        <label className="reference-prompt-field">
+          <span>想要怎样的搭配</span>
+          <textarea value={prompt} onChange={event => setPrompt(event.target.value)} placeholder="例如：明天见客户，想要简约、利落，鞋子走路要舒服" aria-label="描述穿搭需求" />
+          <small>{prompt.length} / 200</small>
+        </label>
+
+        <div className="reference-upload-grid">
+          <button type="button" className={`reference-upload-card ${modelProfile ? "has-image" : ""}`} onClick={() => modelFileRef.current?.click()}>
+            <span className="reference-upload-label"><b>个人模特</b><small>{modelProfile ? "更换全身照" : "上传全身照"}</small></span>
+            {modelProfile ? <span className="reference-model-preview"><span className="reference-model-frame"><img src={modelProfile.imageUrl} alt="我的全身照完整预览" onError={hideUnavailableImage} /></span><span className="reference-model-summary"><b>全身照已就绪</b><small>完整显示人物比例，生成时会参考整张照片</small><em>点击卡片可更换照片</em></span></span> : <span className="reference-upload-empty"><i>＋</i><b>选择人物照片</b><small>正面、全身、光线均匀</small></span>}
+          </button>
+          {activeItems.length ? <WardrobeCarousel
+            items={activeItems}
+            onAdd={() => openUploadPicker("append")}
+            onImageError={hideUnavailableImage}
+          /> : <button type="button" className="reference-upload-card clothes" onClick={() => openUploadPicker("replace")}>
+            <span className="reference-upload-label"><b>我的衣柜</b><small>上传衣服</small></span>
+            <span className="reference-upload-empty"><i>＋</i><b>选择衣物照片</b><small>白底图或背景干净的实拍图</small></span>
+          </button>}
+        </div>
+
+        <p className="reference-format-note">支持 JPG、PNG 和 WebP，单张不超过 30MB</p>
+
+        <footer className="reference-editor-footer">
+          <div className="reference-ratio-field"><span>比例</span><div className="reference-ratio-control" aria-label="效果图比例">{(["1:1", "3:4", "9:16"] as const).map(item => <button type="button" key={item} className={homeRatio === item ? "active" : ""} aria-pressed={homeRatio === item} onClick={() => setHomeRatio(item)}>{item}</button>)}</div></div>
+          <div className="reference-source-control"><span>{closetSourceLabel}</span><button type="button" onClick={openStarterPicker}>切换衣柜</button></div>
+          <button type="button" className="reference-generate" onClick={generateLooks} disabled={loading || !activeItems.length}>{loading ? <><span className="spinner" />生成中</> : <>生成 3 套搭配 <Icon name="arrow" /></>}</button>
+        </footer>
+        {!activeItems.length && <p className="reference-editor-warning">请先上传衣服，或切换到示例衣柜快速体验。</p>}
+      </section>
+
+      {starterLoading && <section className="home-readiness"><span className="spinner" /> 正在准备示例衣柜…</section>}
       {loading && <Thinking phase={recommendationPhase} />}
       <div className="results-anchor" />
       {showResults && resultsBlock}
@@ -1513,14 +1529,15 @@ function YidaApp() {
       <input ref={modelFileRef} type="file" accept="image/*" hidden onChange={event => handleModelUpload(event.target.files)} />
 
       <aside className="desktop-sidebar">
-        <div className="side-brand"><button className="side-logo" onClick={() => setTab("home")} aria-label="LAYRA 首页"><LayraMark /></button><strong>LAYRA</strong><button className="collapse-side" onClick={() => notify("移动端将自动收起侧栏")}>‹</button></div>
+        <div className="side-brand"><button className="side-logo" onClick={() => setTab("home")} aria-label="LAYRA 首页"><LayraMark /></button><strong>LAYRA</strong><button className="collapse-side" onClick={() => notify("移动端将自动收起侧栏")} aria-label="收起侧栏">‹</button></div>
+        <div className="sidebar-section-label">穿搭工具</div>
         <nav>
-          <button className={tab === "home" ? "active primary" : "primary"} onClick={() => setTab("home")}><Icon name="spark" /><span>今日推荐</span></button>
+          <button className={tab === "home" ? "active primary" : "primary"} onClick={() => setTab("home")}><Icon name="spark" /><span>智能穿搭</span><small>热门</small></button>
           <button className={tab === "wardrobe" ? "active" : ""} onClick={() => setTab("wardrobe")}><Icon name="wardrobe" /><span>我的衣柜</span></button>
           <button className={tab === "create" ? "active" : ""} onClick={() => setTab("create")}><Icon name="create" /><span>自主搭配</span></button>
           <button className={tab === "inspiration" ? "active" : ""} onClick={() => setTab("inspiration")}><Icon name="gallery" /><span>穿搭灵感</span></button>
           <button className={tab === "saved" ? "active" : ""} onClick={() => setTab("saved")}><Icon name="saved" /><span>收藏搭配</span></button>
-          <button className={tab === "profile" ? "active" : ""} onClick={() => setTab("profile")}><Icon name="profile" /><span>我的</span></button>
+          <button className={tab === "profile" ? "active" : ""} onClick={() => setTab("profile")}><Icon name="profile" /><span>个人资料</span></button>
         </nav>
         <button className="preference-progress" onClick={() => setTab("profile")}><i><em /></i><span><b>完善穿搭偏好</b><small>已完成 {stylePrefs.length} / 6</small></span><strong>›</strong></button>
         <div className="sidebar-recent"><div><b>近期</b><button onClick={() => setTab("profile")}>⌃</button></div>{history.slice(0, 3).map(item => <button key={item.id} onClick={() => replayHistory(item)}><span>{item.prompt}</span><small>{formatHistoryDate(item.createdAt)}</small></button>)}</div>
@@ -1528,29 +1545,12 @@ function YidaApp() {
       </aside>
 
       <header className="desktop-topbar">
-        <div className="topbar-title"><span>{tab === "home" ? "今日搭配" : tab === "wardrobe" ? "我的衣柜" : tab === "create" ? "个人搭配" : tab === "inspiration" ? "灵感画廊" : tab === "saved" ? "收藏搭配" : "个人中心"}</span></div>
-        <div className="topbar-meta"><button className="weather-pill" onClick={() => setShowWeather(true)}>{weather.temperature}° {city}</button><button className="points-pill" onClick={() => setTab("profile")}>今日剩余 {generationsLeft} 次</button><button className="side-avatar" aria-label="打开个人中心" onClick={() => setTab("profile")}>{profile.nickname.slice(0, 1)}</button></div>
+        <nav className="topbar-navigation" aria-label="主导航"><button className={tab === "home" ? "active" : ""} onClick={() => setTab("home")}>智能穿搭</button><button className={tab === "wardrobe" ? "active" : ""} onClick={() => setTab("wardrobe")}>我的衣柜</button><button className={tab === "inspiration" ? "active" : ""} onClick={() => setTab("inspiration")}>穿搭灵感</button><button className={tab === "saved" ? "active" : ""} onClick={() => setTab("saved")}>收藏搭配</button></nav>
+        <div className="topbar-meta"><button className="points-pill" onClick={() => setTab("profile")}>剩余 {generationsLeft} 次</button><button className="side-avatar" aria-label="打开个人中心" onClick={() => setTab("profile")}>{profile.nickname.slice(0, 1)}</button></div>
       </header>
 
       <section className="studio-surface" id="main-workspace">
-        {tab === "home" && <><div className="desktop-home chat-home product-home" data-scene={scene}>
-          <div className="product-home-grid">
-          <div className="ai-home-content product-home-workspace">
-            <div className="hero-copy ai-home-intro"><h1>今天穿什么？</h1><p>说清场合和想要的感觉，Layra 会从你的衣柜给出三套选择。</p></div>
-            <section className={`studio-composer ai-command-card ${prompt ? "has-prompt" : ""}`}>
-              <div className="ai-scene-control"><span>使用场景</span><div>{scenes.map(item => <button key={item} className={scene === item ? "active" : ""} onClick={() => setScene(item)}>{item}</button>)}</div></div>
-              <div className="ai-prompt-field"><textarea value={prompt} onChange={event => setPrompt(event.target.value)} placeholder={prompts[promptIndex]} aria-label="描述今天想要的穿搭" /></div>
-              <div className="ai-composer-actions"><div className="ai-prompt-starters">{promptStarters.map(item => <button key={item} onClick={() => setPrompt(item)}>{item}</button>)}</div><div className="ai-generate-zone"><small>今日剩余 {generationsLeft} 次</small><button className="primary-generate" onClick={generateLooks} disabled={loading || !activeItems.length}>{loading ? <><span className="spinner" />正在搭配</> : <>生成 3 套<Icon name="arrow" /></>}</button></div></div>
-            </section>
-            {closetSetup}
-          </div>
-          {renderHomeInspiration()}
-          </div>
-          {starterLoading && <section className="home-readiness"><span className="spinner" /> 正在准备示例衣柜…</section>}
-          {loading && <Thinking phase={recommendationPhase} />}
-          <div className="results-anchor" />
-          {showResults && resultsBlock}
-        </div>{mobileHome}</>}
+        {tab === "home" && referenceHome}
 
         {tab === "wardrobe" && <div className="screen wardrobe-screen">
           <header className="sub-header wardrobe-page-header">
@@ -1572,7 +1572,7 @@ function YidaApp() {
           <div className="closet-status"><span><b>{activeItems.filter(item => item.status === "available").length}</b> 件可穿</span><span><b>{activeItems.filter(item => item.status === "washing").length}</b> 件清洗中</span><span><b>{new Set(activeItems.flatMap(item => garmentTagLabels(item.aiTags))).size}</b> 个AI搭配标签</span></div>
           <div className="wardrobe-toolbar"><div className="filter-row">{filters.map(filter => <button key={filter} className={closetFilter === filter ? "active" : ""} onClick={() => setClosetFilter(filter)}>{filter}</button>)}</div><span>{closetFilter === "全部" ? "全部单品" : closetFilter} · {filteredWardrobe.length}</span></div>
           {wardrobeLoading ? <div className="wardrobe-loading"><span className="spinner" /> 正在同步衣柜…</div> : filteredWardrobe.length ? <div className="wardrobe-grid saved-wardrobe-grid">
-            {filteredWardrobe.map(item => <article className={`wardrobe-item saved-garment ${item.status === "washing" ? "is-washing" : ""}`} key={item.id}><div className="uploaded-wrap product-white"><img src={item.imageUrl} alt={item.name} loading="lazy" /><span className="ai-tag">{item.status === "washing" ? "清洗中" : "已入柜"}</span><i className="garment-color-dot" style={{ background: item.colorHex }} /></div><b>{item.name}</b><small>{item.colorName} · {item.category} · {item.season}</small><div className="wardrobe-ai-tags">{garmentTagLabels(item.aiTags).slice(0, 5).map(tag => <span key={tag}>{tag}</span>)}<span>正式 {item.aiTags.formality}/5</span><span>保暖 {item.aiTags.warmth}/5</span></div><div className="wardrobe-actions"><button onClick={() => setEditingWardrobe(item)}>编辑</button><button onClick={() => updateWardrobeItem(item.id, { status: item.status === "washing" ? "available" : "washing" })}>{item.status === "washing" ? "恢复可穿" : "标记清洗"}</button><button onClick={() => deleteWardrobeItem(item)}>删除</button></div></article>)}
+            {filteredWardrobe.map(item => <article className={`wardrobe-item saved-garment ${item.status === "washing" ? "is-washing" : ""}`} key={item.id}><div className="uploaded-wrap product-white"><img src={item.imageUrl} alt={item.name} loading="lazy" onError={hideUnavailableImage} /><span className="ai-tag">{item.status === "washing" ? "清洗中" : "已入柜"}</span><i className="garment-color-dot" style={{ background: item.colorHex }} /></div><b>{item.name}</b><small>{item.colorName} · {item.category} · {item.season}</small><div className="wardrobe-ai-tags">{garmentTagLabels(item.aiTags).slice(0, 5).map(tag => <span key={tag}>{tag}</span>)}<span>正式 {item.aiTags.formality}/5</span><span>保暖 {item.aiTags.warmth}/5</span></div><div className="wardrobe-actions"><button onClick={() => setEditingWardrobe(item)}>编辑</button><button onClick={() => updateWardrobeItem(item.id, { status: item.status === "washing" ? "available" : "washing" })}>{item.status === "washing" ? "恢复可穿" : "标记清洗"}</button><button onClick={() => deleteWardrobeItem(item)}>删除</button></div></article>)}
           </div> : <section className="wardrobe-empty"><div><span>{closetFilter === "全部" ? "＋" : "○"}</span></div><h3>{closetFilter === "全部" ? "衣柜还是空的" : closetFilter === "清洗中" ? "没有清洗中的衣服" : `还没有${closetFilter}`}</h3><p>{closetFilter === "全部" ? "先上传一件常穿的衣服。LAYRA 会自动抠掉背景、识别标签，你只需要确认一下；不想现在上传，也可以先用示例衣柜体验。" : closetFilter === "清洗中" ? "在衣物卡片上点「标记清洗」，它就会出现在这里。" : "这个分类下还没有单品，可以切回全部看看。"}</p>{closetFilter === "全部" ? <div className="wardrobe-empty-actions"><button onClick={() => openUploadPicker("replace")}>上传第一件衣服</button><button className="starter-cta-desktop" onClick={openStarterPicker} disabled={starterLoading}>{starterLoading ? "正在准备…" : "⚡ 先用示例衣柜体验"}</button></div> : <div className="wardrobe-empty-actions"><button onClick={() => setClosetFilter("全部")}>查看全部衣服</button></div>}</section>}
           <section className="photo-guide"><span className="micro-label">拍得好，抠得更干净</span><div><p><b>01</b> 衣服平铺或挂直</p><p><b>02</b> 背景干净、颜色有反差</p><p><b>03</b> 光线均匀，避免明显阴影</p></div></section>
         </div>}
@@ -1582,11 +1582,11 @@ function YidaApp() {
           <div className="create-workbench">
             <section className={`canvas-card ${selectedItems.length ? "has-items" : "is-empty"}`}>
               <div className="canvas-label"><span><b>搭配画布</b><small>{selectedItems.length ? `${selectedItems.length} 件单品已放入` : "把想穿的单品放在一起比较"}</small></span><button disabled={!selectedItems.length} onClick={() => { setSelectedItems([]); setReviewResult(null); }}>清空</button></div>
-              <div className="canvas-items">{selectedItems.length ? selectedItems.map(id => { const item = activeItems.find(w => w.id === id); if (!item) return null; return <button key={id} onClick={() => setSelectedItems(items => items.filter(value => value !== id))}><img src={item.imageUrl} alt={item.name} /><span className="remove-chip" aria-hidden="true">×</span><small>{item.name}</small></button>; }) : <div className="canvas-empty-state"><span className="canvas-empty-icon"><i /><i /><Icon name="create" /></span><b>先从衣柜列表选择单品</b><p>至少选 2 件，LAYRA 会一起检查配色、比例、天气与场合。</p></div>}</div>
+              <div className="canvas-items">{selectedItems.length ? selectedItems.map(id => { const item = activeItems.find(w => w.id === id); if (!item) return null; return <button key={id} onClick={() => setSelectedItems(items => items.filter(value => value !== id))}><img src={item.imageUrl} alt={item.name} onError={hideUnavailableImage} /><span className="remove-chip" aria-hidden="true">×</span><small>{item.name}</small></button>; }) : <div className="canvas-empty-state"><span className="canvas-empty-icon"><i /><i /><Icon name="create" /></span><b>先从衣柜列表选择单品</b><p>至少选 2 件，LAYRA 会一起检查配色、比例、天气与场合。</p></div>}</div>
             </section>
             <aside className="create-picker-panel">
               <div className="create-picker-head"><div><span>搭配来源</span><b>{activeItems.length ? closetSourceLabel : "还没有可选衣物"}</b><small>{activeItems.length ? activeItems.length > 6 ? `${activeItems.length} 件单品，可上下滑动查看` : `${activeItems.length} 件单品可选` : "上传自己的衣服，或先用示例单品体验"}</small></div>{activeItems.length > 0 && <button onClick={openStarterPicker}>切换</button>}</div>
-              {activeItems.length ? <div className="pick-grid" role="region" aria-label="可选衣物" tabIndex={0}>{activeItems.map(item => { const active = selectedItems.includes(item.id); return <button key={item.id} className={active ? "active" : ""} onClick={() => setSelectedItems(items => active ? items.filter(id => id !== item.id) : [...items, item.id])}><img src={item.imageUrl} alt={item.name} loading="lazy" /><small>{item.category} · {item.name}</small>{active && <span className="pick-check"><Icon name="check" /></span>}</button>; })}</div> : <div className="create-source-empty"><span className="source-option-icon"><Icon name="wardrobe" /></span><b>先准备搭配单品</b><p>我的衣柜只保存你上传的真实衣物；示例衣柜用于快速体验，两者不会混在一起。</p><button onClick={() => setTab("wardrobe")}>上传我的衣物 <Icon name="arrow" /></button><button className="secondary-source-action" onClick={openStarterPicker}>使用示例衣柜</button></div>}
+              {activeItems.length ? <div className="pick-grid" role="region" aria-label="可选衣物" tabIndex={0}>{activeItems.map(item => { const active = selectedItems.includes(item.id); return <button key={item.id} className={active ? "active" : ""} onClick={() => setSelectedItems(items => active ? items.filter(id => id !== item.id) : [...items, item.id])}><img src={item.imageUrl} alt={item.name} loading="lazy" onError={hideUnavailableImage} /><small>{item.category} · {item.name}</small>{active && <span className="pick-check"><Icon name="check" /></span>}</button>; })}</div> : <div className="create-source-empty"><span className="source-option-icon"><Icon name="wardrobe" /></span><b>先准备搭配单品</b><p>我的衣柜只保存你上传的真实衣物；示例衣柜用于快速体验，两者不会混在一起。</p><button onClick={() => setTab("wardrobe")}>上传我的衣物 <Icon name="arrow" /></button><button className="secondary-source-action" onClick={openStarterPicker}>使用示例衣柜</button></div>}
               <div className="create-review-bar"><span aria-live="polite">{selectedItems.length < 2 ? `还需选择 ${2 - selectedItems.length} 件` : `已选 ${selectedItems.length} 件，可以开始点评`}</span><button className="review-button" disabled={selectedItems.length < 2 || reviewLoading} onClick={reviewOutfit}><Icon name="spark" /> {reviewLoading ? "点评中…" : "点评这套搭配"}</button></div>
             </aside>
           </div>
@@ -1624,7 +1624,7 @@ function YidaApp() {
 
         {tab === "saved" && <div className="screen saved-screen">
           <header className="sub-header"><div><span className="micro-label">SAVED LOOKS</span><h2>我的收藏</h2></div><span className="step-chip">{savedOutfits.length} 套</span></header><p className="lead-copy">你收藏的搭配都在这里，可以随时查看、删除或再次试穿。</p>
-          {savedOutfits.length ? <div className="saved-list">{savedOutfits.map(outfit => <article className="saved-card" key={outfit.id}><div className="saved-card-items">{outfit.items.map(item => <img key={item.id} src={item.imageUrl} alt={item.name} />)}</div><div className="saved-card-meta"><b>{outfit.title}</b><small>{outfit.scene} · {outfit.items.length} 件 · {formatHistoryDate(outfit.createdAt)}</small></div><div className="saved-card-actions"><button className="saved-card-tryon" onClick={() => retrySavedOutfit(outfit)}>再次试穿</button><button className="saved-card-del" onClick={() => deleteSavedOutfit(outfit.id)}>删除</button></div></article>)}</div> : <section className="wardrobe-empty"><div><span>♡</span></div><h3>还没有收藏的搭配</h3><p>生成试穿效果图后，点「☆ 收藏这套搭配」就会出现在这里。</p><button onClick={() => setTab("home")}>去生成一套 →</button></section>}
+          {savedOutfits.length ? <div className="saved-list">{savedOutfits.map(outfit => <article className="saved-card" key={outfit.id}><div className="saved-card-items">{outfit.items.map(item => <img key={item.id} src={item.imageUrl} alt={item.name} onError={hideUnavailableImage} />)}</div><div className="saved-card-meta"><b>{outfit.title}</b><small>{outfit.scene} · {outfit.items.length} 件 · {formatHistoryDate(outfit.createdAt)}</small></div><div className="saved-card-actions"><button className="saved-card-tryon" onClick={() => retrySavedOutfit(outfit)}>再次试穿</button><button className="saved-card-del" onClick={() => deleteSavedOutfit(outfit.id)}>删除</button></div></article>)}</div> : <section className="wardrobe-empty"><div><span>♡</span></div><h3>还没有收藏的搭配</h3><p>生成试穿效果图后，点「☆ 收藏这套搭配」就会出现在这里。</p><button onClick={() => setTab("home")}>去生成一套 →</button></section>}
         </div>}
 
         {tab === "profile" && <div className="screen profile-screen">
@@ -1638,7 +1638,7 @@ function YidaApp() {
 
       <BottomNav tab={tab} setTab={setTab} />
 
-      {showSwapModal && !showTryOn && <ModalFrame onClose={() => setShowSwapModal(false)} panelClassName="compact-modal"><button className="modal-close" onClick={() => setShowSwapModal(false)}>×</button><span className="micro-label">从衣柜选择替换单品</span><h3>换一件{swapCategory}</h3><div className="swap-grid">{activeItems.filter(item => item.category === swapCategory).map(item => <button key={item.id} onClick={() => swapItem(item.id)}><img src={item.imageUrl} alt={item.name} /><small>{item.name}</small></button>)}{!activeItems.some(item => item.category === swapCategory) && <p className="empty-hint">当前衣柜里暂时没有{swapCategory}，切换衣柜或去上传吧</p>}</div></ModalFrame>}
+      {showSwapModal && !showTryOn && <ModalFrame onClose={() => setShowSwapModal(false)} panelClassName="compact-modal"><button className="modal-close" onClick={() => setShowSwapModal(false)}>×</button><span className="micro-label">从衣柜选择替换单品</span><h3>换一件{swapCategory}</h3><div className="swap-grid">{activeItems.filter(item => item.category === swapCategory).map(item => <button key={item.id} onClick={() => swapItem(item.id)}><img src={item.imageUrl} alt={item.name} onError={hideUnavailableImage} /><small>{item.name}</small></button>)}{!activeItems.some(item => item.category === swapCategory) && <p className="empty-hint">当前衣柜里暂时没有{swapCategory}，切换衣柜或去上传吧</p>}</div></ModalFrame>}
       {showStarterPicker && <ModalFrame onClose={() => setShowStarterPicker(false)} panelClassName="compact-modal"><button className="modal-close" onClick={() => setShowStarterPicker(false)}>×</button><span className="micro-label">OUTFIT SOURCE</span><h3>选择搭配来源</h3><p>「我的衣柜」只放你上传的真实衣物；「虚拟衣柜」提供男女各 {STARTER_WARDROBE_SIZE_PER_GENDER} 件独立白底单品。它与真人整套的穿搭灵感分开保存，推荐时只使用当前选择的衣柜。</p><div className="starter-gender-grid"><button className={activeCloset === "own" ? "active" : ""} aria-pressed={activeCloset === "own"} onClick={removeStarterWardrobe}><b>{activeCloset === "own" ? "✓ 我的衣柜（当前）" : "我的衣柜"}</b><small>你上传的真实衣物 · 现有 {ownGarmentCount} 件</small></button><button className={activeCloset === "female" ? "active" : ""} aria-pressed={activeCloset === "female"} onClick={() => void activateStarterWardrobe("女")}><b>{activeCloset === "female" ? "✓ 女生虚拟衣柜（当前）" : "女生虚拟衣柜"}</b><small>{STARTER_WARDROBE_SIZE_PER_GENDER} 件单件女装 · 不与灵感图混用</small></button><button className={activeCloset === "male" ? "active" : ""} aria-pressed={activeCloset === "male"} onClick={() => void activateStarterWardrobe("男")}><b>{activeCloset === "male" ? "✓ 男生虚拟衣柜（当前）" : "男生虚拟衣柜"}</b><small>{STARTER_WARDROBE_SIZE_PER_GENDER} 件单件男装 · 不与灵感图混用</small></button></div></ModalFrame>}
       {showTryOn && <ModalFrame onClose={closeTryOn} panelClassName={`personal-tryon-modal ${showSwapModal ? "is-selecting-material" : ""}`}>
         <button className="modal-close" aria-label="关闭效果图" onClick={closeTryOn}>×</button>
@@ -1671,7 +1671,7 @@ function YidaApp() {
               </header>
               {tryOnSwapCandidates.length ? <div className="tryon-material-grid" role="list">
                 {tryOnSwapCandidates.map(item => <button type="button" role="listitem" className="tryon-material-option" key={item.id} onClick={() => void swapTryOnItem(item)}>
-                  <span><img src={item.imageUrl} alt="" /></span><b>{item.name}</b><small>{item.colorName} · {item.style}</small>
+                  <span><img src={item.imageUrl} alt="" onError={hideUnavailableImage} /></span><b>{item.name}</b><small>{item.colorName} · {item.style}</small>
                 </button>)}
               </div> : <div className="tryon-material-empty"><p>当前衣柜没有其他{swapCategory}可替换。</p><button type="button" onClick={openWardrobeForSwap}>去衣柜添加</button></div>}
             </aside>}
@@ -1697,7 +1697,7 @@ function YidaApp() {
         {!uploadProcessing && <footer className="upload-modal-foot"><button className="secondary-upload" disabled={refinementPending || uploadSaving} onClick={() => openUploadPicker("append")}>{refinementPending ? "高清商品图生成中" : "＋ 继续添加"}</button><button className="primary-upload" disabled={refinementPending || uploadSaving || !garmentDrafts.some(item => item.selected)} onClick={saveGarmentDrafts}>{uploadSaving ? "正在加入衣柜…" : `加入衣柜（${garmentDrafts.filter(item => item.selected).length}）`}</button></footer>}
       </ModalFrame>}
 
-      {editingWardrobe && <ModalFrame onClose={() => setEditingWardrobe(null)} panelClassName="compact-modal wardrobe-edit-modal"><button className="modal-close" onClick={() => setEditingWardrobe(null)}>×</button><span className="micro-label">EDIT GARMENT</span><h3>修改衣物信息</h3><div className="edit-garment-preview transparent-grid"><img src={editingWardrobe.imageUrl} alt={editingWardrobe.name} /></div><div className="profile-form"><label>衣物名称<input value={editingWardrobe.name} onChange={event => setEditingWardrobe({ ...editingWardrobe, name: event.target.value })} /></label><label>分类<select value={editingWardrobe.category} onChange={event => setEditingWardrobe({ ...editingWardrobe, category: event.target.value })}>{["上衣", "外套", "下装", "连衣裙", "鞋履", "配饰", "帽子"].map(value => <option key={value}>{value}</option>)}</select></label><label>颜色<input value={editingWardrobe.colorName} onChange={event => setEditingWardrobe({ ...editingWardrobe, colorName: event.target.value })} /></label><label>季节<select value={editingWardrobe.season} onChange={event => setEditingWardrobe({ ...editingWardrobe, season: event.target.value })}>{["四季", "春秋", "夏季", "冬季"].map(value => <option key={value}>{value}</option>)}</select></label><label>风格<select value={editingWardrobe.style} onChange={event => setEditingWardrobe({ ...editingWardrobe, style: event.target.value })}>{["简约", "通勤", "休闲", "运动", "复古", "甜酷"].map(value => <option key={value}>{value}</option>)}</select></label></div><div className="edit-ai-tags-wrap"><span className="micro-label">AI MATCHING TAGS</span><div className="edit-ai-tags">{garmentTagLabels(editingWardrobe.aiTags).map(tag => <span key={tag}>{tag}</span>)}<span>正式度 {editingWardrobe.aiTags.formality}/5</span><span>保暖度 {editingWardrobe.aiTags.warmth}/5</span></div><small>用于天气、场合、层次与风格筛选，后续由搭配模型综合评分。</small></div><button className="primary-modal-button" onClick={() => updateWardrobeItem(editingWardrobe.id, editingWardrobe)}>保存修改</button></ModalFrame>}
+      {editingWardrobe && <ModalFrame onClose={() => setEditingWardrobe(null)} panelClassName="compact-modal wardrobe-edit-modal"><button className="modal-close" onClick={() => setEditingWardrobe(null)}>×</button><span className="micro-label">EDIT GARMENT</span><h3>修改衣物信息</h3><div className="edit-garment-preview transparent-grid"><img src={editingWardrobe.imageUrl} alt={editingWardrobe.name} onError={hideUnavailableImage} /></div><div className="profile-form"><label>衣物名称<input value={editingWardrobe.name} onChange={event => setEditingWardrobe({ ...editingWardrobe, name: event.target.value })} /></label><label>分类<select value={editingWardrobe.category} onChange={event => setEditingWardrobe({ ...editingWardrobe, category: event.target.value })}>{["上衣", "外套", "下装", "连衣裙", "鞋履", "配饰", "帽子"].map(value => <option key={value}>{value}</option>)}</select></label><label>颜色<input value={editingWardrobe.colorName} onChange={event => setEditingWardrobe({ ...editingWardrobe, colorName: event.target.value })} /></label><label>季节<select value={editingWardrobe.season} onChange={event => setEditingWardrobe({ ...editingWardrobe, season: event.target.value })}>{["四季", "春秋", "夏季", "冬季"].map(value => <option key={value}>{value}</option>)}</select></label><label>风格<select value={editingWardrobe.style} onChange={event => setEditingWardrobe({ ...editingWardrobe, style: event.target.value })}>{["简约", "通勤", "休闲", "运动", "复古", "甜酷"].map(value => <option key={value}>{value}</option>)}</select></label></div><div className="edit-ai-tags-wrap"><span className="micro-label">AI MATCHING TAGS</span><div className="edit-ai-tags">{garmentTagLabels(editingWardrobe.aiTags).map(tag => <span key={tag}>{tag}</span>)}<span>正式度 {editingWardrobe.aiTags.formality}/5</span><span>保暖度 {editingWardrobe.aiTags.warmth}/5</span></div><small>用于天气、场合、层次与风格筛选，后续由搭配模型综合评分。</small></div><button className="primary-modal-button" onClick={() => updateWardrobeItem(editingWardrobe.id, editingWardrobe)}>保存修改</button></ModalFrame>}
 
       {showWeather && <ModalFrame onClose={() => setShowWeather(false)} panelClassName="compact-modal"><button className="modal-close" onClick={() => setShowWeather(false)}>×</button><span className="micro-label">WEATHER & LOCATION</span><h3>天气与城市</h3><p>允许定位后会自动获取当前位置；拒绝定位时使用常驻城市。天气会在后台参与搭配，不需要重复填写。</p><button className="location-button" onClick={locateWeather}>⌖ 允许定位并获取天气</button><div className="city-grid">{["杭州", "上海", "北京", "广州", "深圳", "成都"].map(item => <button key={item} className={city === item ? "active" : ""} onClick={() => { setCity(item); setShowWeather(false); notify(`常驻城市已设为${item}`); }}>{item}</button>)}</div></ModalFrame>}
 
@@ -1803,7 +1803,7 @@ function Results({ scene, scope, recommendations, intent, selectedId, setSelecte
     <p className="result-context">{scope} · {weather.city} {weather.temperature}° / {weather.condition}{(intent?.styles || intent?.style)?.length ? ` · ${(intent?.styles || intent?.style || []).join("、")}` : ""}{intent?.intensity ? ` · ${intent.intensity}` : ""}</p>
     <div className="outfit-list">{recommendations.map((look, index) => <button type="button" className={`real-outfit-card ${selectedId === look.id ? "active" : ""}`} key={look.id} aria-pressed={selectedId === look.id} onClick={() => setSelectedId(look.id)}>
       <div className="real-look-top"><span>LOOK 0{index + 1}</span><b>{look.score}<small>分</small></b></div>
-      <div className="real-outfit-board">{look.items.map(item => <figure key={item.id}><img src={item.imageUrl} alt={item.name} /><figcaption>{item.category}</figcaption></figure>)}</div>
+      <div className="real-outfit-board">{look.items.map(item => <figure key={item.id}><img src={item.imageUrl} alt={item.name} onError={hideUnavailableImage} /><figcaption>{item.category}</figcaption></figure>)}</div>
       <div className="real-look-copy"><h4>{look.title}</h4><p>{look.reason}</p><div>{(look.highlights || []).map(tag => <span key={tag}>{tag}</span>)}</div>{look.missingSuggestion && <small>可选添置：{look.missingSuggestion}</small>}</div>
       <span className="real-look-select">{selectedId === look.id ? "✓ 已选择" : "选择这套"}</span>
     </button>)}</div>

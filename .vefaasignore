@@ -22,5 +22,7 @@ outputs
 .DS_Store
 
 tests
+video
+app/components/*.preview.html
 docs
 AI*.md

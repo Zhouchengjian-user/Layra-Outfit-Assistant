@@ -1,17 +1,20 @@
 # Layra 穿搭助手
 
-Layra 是一款面向手机 H5 的个人 AI 衣柜与穿搭助手。用户可以从照片中识别单品、生成白底商品图、维护个人衣柜，并获得穿搭推荐和试穿效果图。
+Layra 是一款支持桌面和手机的个人 AI 衣柜与穿搭助手。用户可以从照片中识别单品、生成白底商品图、维护个人衣柜，并获得穿搭推荐和试穿效果图。
 
-## 产品演示
+## 产品宣传片
 
-[
-  ![Layra 穿搭助手产品演示](docs/demo/layra-product-demo-cover.png)
-](https://zhouchengjian-user.github.io/Layra-Outfit-Assistant/demo/)
+[![▶ 点击播放 LAYRA 新版产品宣传片](docs/demo/layra-product-demo-cover.png)](https://zhouchengjian-user.github.io/Layra-Outfit-Assistant/demo/?v=20260906)
 
-> [在线播放完整演示视频](https://zhouchengjian-user.github.io/Layra-Outfit-Assistant/demo/) · [下载原始视频](docs/demo/layra-product-demo.mp4)
+**点击上方封面即可播放** · 2026 年 9 月新版 · 45 秒 · 1080p · 带背景音乐
+
+[▶ 在线播放](https://zhouchengjian-user.github.io/Layra-Outfit-Assistant/demo/?v=20260906) · [MP4 视频直达](https://zhouchengjian-user.github.io/Layra-Outfit-Assistant/demo/layra-20260906.mp4) · [打开产品](https://sidcq5h51g43rsuddsnda.apigateway-cn-beijing.volceapi.com)
+
+宣传片展示新版工作室、衣柜管理、三套搭配推荐、试穿和换鞋界面。片中使用产品示例素材，试穿画面为界面示意。
 
 ## 当前能力
 
+- 桌面与手机自适应工作室：选择场景、描述需求、上传人物照片，并左右浏览衣柜单品
 - 一次上传 1–5 张照片，识别衣物、鞋履、帽子、腰带、包和首饰等单品
 - 按识别框逐件裁剪，使用 veImageX productv2 生成 1024×1024 白底商品图并补充结构化穿搭标签
 - 衣柜分类浏览、编辑、清洗状态、删除和多用户数据隔离

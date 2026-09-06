@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import "./studio-refinement.css";
 
 export const metadata: Metadata = {
   title: "LAYRA 穿搭助手",

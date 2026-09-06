@@ -1,6 +1,6 @@
 import { getOwner, ownerJson, withOwnerCookie } from "../../lib/owner";
 import { dbFirst, dbRun, ensureSchema } from "../../lib/db";
-import { storageDelete, storageGet, storagePut } from "../../lib/storage";
+import { storageDelete, storageExists, storageGet, storagePut } from "../../lib/storage";
 import { apiErrorResponse } from "../../lib/observability";
 import { withProtectedApiRequest } from "../../lib/protected-route";
 
@@ -11,6 +11,10 @@ async function handleGET(request: Request) {
     const row = await dbFirst<Record<string, string | number>>(`SELECT image_key AS imageKey, content_type AS contentType,
       quality, created_at AS createdAt, updated_at AS updatedAt FROM model_profiles WHERE owner_id = ?`, [owner.id]);
     if (!row) return ownerJson({ profile: null }, owner);
+    if (!await storageExists(String(row.imageKey))) {
+      await dbRun("DELETE FROM model_profiles WHERE owner_id = ?", [owner.id]);
+      return ownerJson({ profile: null }, owner);
+    }
     if (new URL(request.url).searchParams.get("image") === "1") {
       const object = await storageGet(String(row.imageKey));
       if (!object) return ownerJson({ error: "模特照片不存在" }, owner, 404);

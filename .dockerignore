@@ -26,6 +26,8 @@ __pycache__
 docs
 
 tests
+video
+app/components/*.preview.html
 
 npm-debug.log*
 yarn-debug.log*

@@ -48,12 +48,16 @@ async function handleGET(request: Request) {
       const row = await dbFirst<{ imageKey: string }>("SELECT image_key AS imageKey FROM wardrobe_items WHERE id = ? AND owner_id = ?", [imageId, owner.id]);
       if (!row) return ownerJson({ error: "衣物不存在" }, owner, 404);
       const object = await storageGet(row.imageKey);
-      if (!object) return ownerJson({ error: "图片不存在" }, owner, 404);
+      if (!object) {
+        // Keep the metadata for possible recovery, but never recommend a garment whose source image is gone.
+        await dbRun("UPDATE wardrobe_items SET status = 'missing' WHERE id = ? AND owner_id = ?", [imageId, owner.id]);
+        return ownerJson({ error: "图片不存在" }, owner, 404);
+      }
       const headers = new Headers({ "Content-Type": object.contentType });
       headers.set("Cache-Control", "private, max-age=31536000, immutable");
       return withOwnerCookie(new Response(object.body, { headers }), owner);
     }
-    const items = await dbAll(`${itemSelect} WHERE owner_id = ? ORDER BY created_at DESC LIMIT 600`, [owner.id]);
+    const items = await dbAll(`${itemSelect} WHERE owner_id = ? AND status <> 'missing' ORDER BY created_at DESC LIMIT 600`, [owner.id]);
     const presented = items.map(item => ({ ...presentItem(item), imageUrl: `/api/wardrobe?image=${item.id}` }));
     return ownerJson({ items: presented }, owner);
   } catch (error) {

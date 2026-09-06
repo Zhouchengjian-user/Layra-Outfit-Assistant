@@ -6,6 +6,10 @@
 # next.js
 /.next/
 /out/
+
+# 宣传片成片位于 docs/demo；本地制作工程含缓存和原始素材
+/video/
+app/components/*.preview.html
 next-env.d.ts
 
 # production

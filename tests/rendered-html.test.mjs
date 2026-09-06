@@ -78,13 +78,53 @@ test("生产可观测性：Sentry 仅在配置 DSN 后启用且默认保护隐�
 });
 
 test("首页使用真实穿搭图，并尊重减少动态效果设置", async () => {
-  const [page, styles] = await Promise.all([read("../app/page.tsx"), read("../app/globals.css")]);
+  const [page, styles, refinement] = await Promise.all([
+    read("../app/page.tsx"),
+    read("../app/globals.css"),
+    read("../app/studio-refinement.css"),
+  ]);
 
-  assert.match(page, /home-featured-look/);
-  assert.match(page, /currentInspirationThemes\.slice\(0, 3\)/);
+  assert.match(page, /reference-look-ribbon/);
+  assert.match(page, /currentInspirationThemes\.slice\(0, 6\)/);
+  assert.match(page, /reference-upload-grid/);
   assert.doesNotMatch(page, /ai-home-atmosphere|input-signal/);
   assert.match(styles, /@media \(prefers-reduced-motion: reduce\)/);
-  assert.match(styles, /\.home-featured-look img/);
+  assert.match(styles, /\.reference-hero-copy > button/);
+  assert.match(styles, /\.reference-upload-card/);
+  assert.doesNotMatch(page, /首次体验可免费生成/);
+  assert.match(refinement, /\.reference-home \.reference-hero-copy h1 \{[\s\S]*font-size: clamp\(54px, 4\.6vw, 68px\);/);
+  assert.match(refinement, /\.reference-home \.reference-hero-copy p \{[\s\S]*font-size: 17px;/);
+});
+
+test("首页衣柜动态展示全部单品并支持左右浏览", async () => {
+  const [page, carousel, styles] = await Promise.all([
+    read("../app/page.tsx"),
+    read("../app/components/wardrobe-carousel.tsx"),
+    read("../app/studio-refinement.css"),
+  ]);
+
+  assert.match(page, /<WardrobeCarousel[\s\S]*items=\{activeItems\}/);
+  assert.doesNotMatch(page, /activeItems\.slice\(0, 3\)/);
+  assert.match(carousel, /items\.map\(item =>/);
+  assert.match(carousel, /查看上一件衣物/);
+  assert.match(carousel, /查看下一件衣物/);
+  assert.match(carousel, /左右滑动查看/);
+  assert.match(carousel, /rail\.scrollLeft = Math\.max\(0, Math\.min/);
+  assert.match(carousel, /rail\.scrollBy\(\{ left: distance, behavior: "smooth" \}\)/);
+  assert.match(carousel, /prefers-reduced-motion: reduce/);
+  assert.match(styles, /\.reference-clothes-preview \{[\s\S]*overflow-x: auto;[\s\S]*scroll-snap-type: x mandatory;/);
+  assert.match(styles, /touch-action: pan-x pan-y/);
+});
+
+test("首页优先选择使用场景并移除旧英文标题栏", async () => {
+  const page = await read("../app/page.tsx");
+  const sceneRow = page.indexOf('className="reference-scene-row reference-scene-row-top"');
+  const promptField = page.indexOf('className="reference-prompt-field"');
+
+  assert.ok(sceneRow >= 0 && sceneRow < promptField, "使用场景应位于需求输入框之前");
+  assert.doesNotMatch(page, /Virtual Try On/);
+  assert.doesNotMatch(page, /<section className="reference-editor"[^>]*>\s*<header>/);
+  assert.match(page, /className="reference-scene-reset"[\s\S]*?重新开始/);
 });
 
 test("业务逻辑保留：第一阶段衣柜工作流", async () => {
@@ -107,6 +147,9 @@ test("业务逻辑保留：第一阶段衣柜工作流", async () => {
   assert.match(processor, /canvasToBlob/);
   assert.match(api, /storagePut/);
   assert.match(api, /ai_tags/);
+  assert.match(api, /SET status = 'missing'/);
+  assert.match(api, /status <> 'missing'/);
+  assert.match(page, /hideUnavailableImage/);
   assert.match(analyzer, /qwen3-vl-flash/);
   assert.match(analyzer, /mergePairs/);
   assert.match(analyzer, /removeItemsHiddenByOuterwear/);
@@ -170,8 +213,8 @@ test("业务逻辑保留：第一阶段衣柜工作流", async () => {
   assert.match(page, /ownGarmentCount > 0 \? "继续上传" : "上传衣物"/);
   assert.match(page, /wardrobe-mode-switch/);
   assert.match(page, /wardrobe-gender-switch/);
-  assert.match(page, /体验虚拟衣柜/);
-  assert.match(page, /女装、男装各 \{STARTER_WARDROBE_SIZE_PER_GENDER\} 件白底单品/);
+  assert.match(page, /onClick=\{openStarterPicker\}/);
+  assert.match(page, /切换衣柜/);
   assert.match(page, /targetStarterKeys\.size === STARTER_WARDROBE_SIZE_PER_GENDER/);
   assert.doesNotMatch(page, /!activeItems\.length && !starterLoading && closetSetup/);
   assert.match(processor, /normalizedImageMaxSide = 1280/);
@@ -229,6 +272,8 @@ test("业务逻辑保留：第二阶段个人模特与可恢复穿搭工作流",
   assert.match(outfitClient, /pollVisualizationTask/);
   assert.match(page, /三套衣柜方案/);
   assert.match(modelApi, /model-profiles/);
+  assert.match(modelApi, /storageExists/);
+  assert.match(modelApi, /DELETE FROM model_profiles WHERE owner_id/);
   assert.match(recommendApi, /status = 'available'/);
   assert.match(recommendApi, /sanitizeDisplayText/);
   assert.match(recommendApi, /候选搭配/);
