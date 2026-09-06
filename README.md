@@ -4,11 +4,11 @@ Layra 是一款支持桌面和手机的个人 AI 衣柜与穿搭助手。用户�
 
 ## 产品宣传片
 
-[![▶ 点击播放 LAYRA 新版产品宣传片](docs/demo/layra-product-demo-cover.png)](https://zhouchengjian-user.github.io/Layra-Outfit-Assistant/demo/?v=20260906)
+[![▶ 点击播放 LAYRA 新版产品宣传片](docs/demo/layra-product-demo-cover.png)](https://zhouchengjian-user.github.io/Layra-Outfit-Assistant/demo/?v=20260906-30s)
 
-**点击上方封面即可播放** · 2026 年 9 月新版 · 45 秒 · 1080p · 带背景音乐
+**点击上方封面即可播放** · 2026 年 9 月新版 · 30 秒 · 1080p · 带背景音乐
 
-[▶ 在线播放](https://zhouchengjian-user.github.io/Layra-Outfit-Assistant/demo/?v=20260906) · [MP4 视频直达](https://zhouchengjian-user.github.io/Layra-Outfit-Assistant/demo/layra-20260906.mp4) · [打开产品](https://sidcq5h51g43rsuddsnda.apigateway-cn-beijing.volceapi.com)
+[▶ 在线播放](https://zhouchengjian-user.github.io/Layra-Outfit-Assistant/demo/?v=20260906-30s) · [MP4 视频直达](https://zhouchengjian-user.github.io/Layra-Outfit-Assistant/demo/layra-20260906-30s.mp4) · [打开产品](https://sidcq5h51g43rsuddsnda.apigateway-cn-beijing.volceapi.com)
 
 宣传片展示新版工作室、衣柜管理、三套搭配推荐、试穿和换鞋界面。片中使用产品示例素材，试穿画面为界面示意。
 
