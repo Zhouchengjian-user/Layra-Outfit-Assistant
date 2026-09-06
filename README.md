@@ -8,7 +8,7 @@ Layra 是一款面向手机 H5 的个人 AI 衣柜与穿搭助手。用户可以
   ![Layra 穿搭助手产品演示](docs/demo/layra-product-demo-cover.png)
 ](https://zhouchengjian-user.github.io/Layra-Outfit-Assistant/demo/)
 
-> [在线播放完整演示视频](https://zhouchengjian-user.github.io/Layra-Outfit-Assistant/demo/) · [下载原始视频](docs/demo/layra-product-demo.mp4)
+> [在线播放新版宣传片](https://zhouchengjian-user.github.io/Layra-Outfit-Assistant/demo/) · [下载原始视频](docs/demo/layra-20260906.mp4)
 
 ## 当前能力
 
