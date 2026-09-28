@@ -284,6 +284,15 @@ const TABLES = [
     created_at BIGINT NOT NULL,
     PRIMARY KEY (id)
   )`,
+  `CREATE TABLE IF NOT EXISTS outfit_feedback (
+    id VARCHAR(36) NOT NULL,
+    owner_id VARCHAR(64) NOT NULL,
+    core_key VARCHAR(255) NOT NULL,
+    action VARCHAR(20) NOT NULL,
+    item_ids TEXT NOT NULL,
+    created_at BIGINT NOT NULL,
+    PRIMARY KEY (id)
+  )`,
   `CREATE TABLE IF NOT EXISTS chat_history (
     id VARCHAR(36) NOT NULL,
     owner_id VARCHAR(64) NOT NULL,
@@ -311,6 +320,7 @@ const INDEXES = [
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_tasks_owner_kind_key ON ai_tasks (owner_id, kind, idempotency_key)`,
   `CREATE INDEX IF NOT EXISTS idx_ai_tasks_owner_kind_updated ON ai_tasks (owner_id, kind, updated_at)`,
   `CREATE INDEX IF NOT EXISTS idx_saved_outfits_owner_created ON saved_outfits (owner_id, created_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_outfit_feedback_owner_created ON outfit_feedback (owner_id, created_at)`,
   `CREATE INDEX IF NOT EXISTS idx_chat_history_owner_created ON chat_history (owner_id, created_at)`,
 ];
 

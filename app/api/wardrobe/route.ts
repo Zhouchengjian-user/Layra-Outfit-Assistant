@@ -25,12 +25,13 @@ function presentItem(item: Record<string, unknown>) {
   const color = String(item.colorName || "未识别");
   const season = String(item.season || "四季");
   const style = String(item.style || "简约");
-  const aiTags = parseTags(item.aiTags, { category, color, season, style }) as GarmentAITags & { starterGender?: string };
+  const aiTags = parseTags(item.aiTags, { category, color, season, style }) as GarmentAITags & { starterGender?: string; starterId?: string };
   // 保留预设衣柜标记（normalize 会丢弃扩展字段）
   try {
     const raw = typeof item.aiTags === "string" ? JSON.parse(item.aiTags) : item.aiTags;
-    if (raw && typeof raw === "object" && "starterGender" in raw) {
-      aiTags.starterGender = String((raw as Record<string, unknown>).starterGender);
+    if (raw && typeof raw === "object") {
+      if ("starterGender" in raw) aiTags.starterGender = String((raw as Record<string, unknown>).starterGender);
+      if ("starterId" in raw) aiTags.starterId = String((raw as Record<string, unknown>).starterId);
     }
   } catch {
     // 忽略解析失败
@@ -131,6 +132,13 @@ async function handlePATCH(request: Request) {
       ...(season !== current.season ? { seasons: [season] } : {}),
       ...(style !== current.style ? { styles: [style] } : {}),
     };
+    // Example wardrobe identity is server-owned and must survive user edits.
+    const starterIdentity: { starterGender?: string; starterId?: string } = {};
+    try {
+      const raw = JSON.parse(String(current.aiTags || "{}")) as Record<string, unknown>;
+      if (raw.starterGender === "女" || raw.starterGender === "男") starterIdentity.starterGender = raw.starterGender;
+      if (typeof raw.starterId === "string") starterIdentity.starterId = raw.starterId;
+    } catch { /* Existing malformed tags are handled by parseTags above. */ }
     const item = {
       ...presentItem(current),
       name: String(body.name ?? current.name).trim().slice(0, 40),
@@ -140,7 +148,7 @@ async function handlePATCH(request: Request) {
       season,
       style,
       status: body.status === "washing" ? "washing" : "available",
-      aiTags: normalizeGarmentAITags(alignedTags, { category, color: colorName, season, style }),
+      aiTags: { ...normalizeGarmentAITags(alignedTags, { category, color: colorName, season, style }), ...starterIdentity },
       tagVersion: 2,
       imageUrl: `/api/wardrobe?image=${body.id}`,
     };

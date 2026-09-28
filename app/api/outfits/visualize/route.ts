@@ -6,6 +6,7 @@ import { dbAll, dbFirst } from "../../../lib/db";
 import { storageGet, storagePut } from "../../../lib/storage";
 import { apiErrorResponse, logServerEvent } from "../../../lib/observability";
 import { withProtectedApiRequest } from "../../../lib/protected-route";
+import { buildTryOnPrompt as buildFacelessTryOnPrompt } from "../../../lib/tryon-prompt";
 import {
   completeAiTask,
   ensureAiTaskSchema,
@@ -350,8 +351,8 @@ async function handlePOST(request: Request) {
     const itemIds = [...new Set((Array.isArray(submittedIds) ? submittedIds : []).map(String))].slice(0, 6);
     if (!itemIds.length) return ownerJson({ error: "请先选择一套搭配" }, owner, 400);
     const profile = await dbFirst<{ imageKey: string; contentType: string }>("SELECT image_key AS imageKey, content_type AS contentType FROM model_profiles WHERE owner_id = ?", [owner.id]);
-    if (!profile) return ownerJson({ error: "请先上传一张清晰的个人全身照" }, owner, 400);
-    const sourceDimensions = await storedImageDimensions(profile.imageKey);
+    const userProfile = await dbFirst<{ gender: string }>("SELECT gender FROM user_profiles WHERE owner_id = ?", [owner.id]);
+    const sourceDimensions = profile ? await storedImageDimensions(profile.imageKey) : { width: 1536, height: 2048 };
     const placeholders = itemIds.map(() => "?").join(",");
     const rows = await dbAll<ImageRow>(`SELECT id, name, category, image_key AS imageKey FROM wardrobe_items
       WHERE owner_id = ? AND status = 'available' AND id IN (${placeholders})`, [owner.id, ...itemIds]);
@@ -371,7 +372,7 @@ async function handlePOST(request: Request) {
     const garmentImageVersions = ordered.map(item => item.imageKey);
     const semanticHash = semanticCacheHash({
       ownerId: owner.id,
-      profileImageVersion: profile.imageKey,
+      profileImageVersion: profile?.imageKey || `faceless-mannequin:${userProfile?.gender || "其他"}`,
       garmentImageVersions,
       scene,
       prompt: userPrompt,
@@ -386,7 +387,7 @@ async function handlePOST(request: Request) {
       title,
       scene,
       prompt: userPrompt,
-      profileImageVersion: profile.imageKey,
+      profileImageVersion: profile?.imageKey || `faceless-mannequin:${userProfile?.gender || "其他"}`,
       garmentImageVersions,
       model,
       size,
@@ -424,11 +425,13 @@ async function handlePOST(request: Request) {
       });
     }
 
-    const tryOnPrompt = buildTryOnPrompt(ordered, scene, userPrompt, sourceDimensions);
+    const tryOnPrompt = profile
+      ? buildTryOnPrompt(ordered, scene, userPrompt, sourceDimensions)
+      : buildFacelessTryOnPrompt(ordered, scene, userPrompt, false, userProfile?.gender);
     const shared = sharedSemanticGeneration(resultKey, async () => {
       const preprocessStartedAt = performance.now();
       const optimizedImages = await Promise.all([
-        optimizedImageDataUrl(profile.imageKey, 2048, 92),
+        ...(profile ? [optimizedImageDataUrl(profile.imageKey, 2048, 92)] : []),
         ...ordered.map(item => optimizedImageDataUrl(item.imageKey, 640, 84)),
       ]);
       const preprocessMs = Math.round(performance.now() - preprocessStartedAt);

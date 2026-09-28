@@ -60,10 +60,34 @@ test("搭配引擎理解具体需求并输出三套结构完整、互有差异�
   assert.equal(result.intent.warmth, 4);
   assert.equal(selected.length, 3);
   assert.equal(new Set(selected.map(candidate => candidate.itemIds.slice().sort().join("|"))).size, 3);
+  assert.equal(new Set(selected.map(candidate => engine.outfitCoreKey(candidate.items))).size, 3);
   for (const candidate of selected) {
     assert.ok(candidate.items.some(item => item.category === "上衣"));
     assert.ok(candidate.items.some(item => item.category === "下装"));
     assert.ok(candidate.items.some(item => item.category === "鞋履"));
     assert.ok(candidate.score >= 60);
   }
+});
+
+test("只更换鞋或配饰不会占用另一张主推荐卡", () => {
+  const top = wardrobeItem("top", "白衬衫", "上衣", "白色", "通勤", 2, 4);
+  const bottom = wardrobeItem("bottom", "黑西裤", "下装", "黑色", "通勤", 2, 4);
+  const otherTop = wardrobeItem("other-top", "蓝衬衫", "上衣", "蓝色", "通勤", 2, 4);
+  const shoes = ["s1", "s2"].map(id => wardrobeItem(id, "乐福鞋", "鞋履", "黑色", "通勤", 2, 4));
+  const candidates = [
+    { id: "a", items: [top, bottom, shoes[0]], itemIds: [top.id, bottom.id, shoes[0].id] },
+    { id: "b", items: [top, bottom, shoes[1]], itemIds: [top.id, bottom.id, shoes[1].id] },
+    { id: "c", items: [otherTop, bottom, shoes[0]], itemIds: [otherTop.id, bottom.id, shoes[0].id] },
+  ];
+  const selected = engine.selectDiverseCandidates(candidates, 3);
+  assert.deepEqual(selected.map(item => item.id), ["a", "c"]);
+});
+
+test("编辑上班等场景标签后会影响通勤推荐分", () => {
+  const top = wardrobeItem("top", "白衬衫", "上衣", "白色", "简约", 2, 4);
+  const bottom = wardrobeItem("bottom", "黑西裤", "下装", "黑色", "简约", 2, 4);
+  const before = engine.reviewOutfit([top, bottom], { scene: "通勤" });
+  const edited = [top, bottom].map(item => ({ ...item, aiTags: { ...item.aiTags, occasions: ["上班"] } }));
+  const after = engine.reviewOutfit(edited, { scene: "通勤" });
+  assert.ok(after.breakdown.occasion > before.breakdown.occasion);
 });

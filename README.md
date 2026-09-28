@@ -18,8 +18,10 @@ Layra 是一款支持桌面和手机的个人 AI 衣柜与穿搭助手。用户�
 - 一次上传 1–5 张照片，识别衣物、鞋履、帽子、腰带、包和首饰等单品
 - 按识别框逐件裁剪，使用 veImageX productv2 生成 1024×1024 白底商品图并补充结构化穿搭标签
 - 衣柜分类浏览、编辑、清洗状态、删除和多用户数据隔离
-- AI 穿搭推荐、历史记录、收藏搭配和模特试穿
-- 邀请码登录，服务端签名会话 Cookie，有效期 7 天
+- AI 穿搭推荐、历史记录、收藏搭配和模特试穿；不上传本人照片也可生成不露脸假人效果图
+- 推荐卡片可直接标记“不适合我”“今天穿这套”或收藏；排除相同核心单品组合，换鞋或配饰不会算作新的一套
+- AI 识别后可改衣物材质、图案和适用场景；天气支持主动定位或搜索城市
+- 邀请码登录与可选的火山引擎 Agent Identity 账号登录，服务端签名会话 Cookie，有效期 7 天
 - TOS 保存图片；轻量生产模式使用 SQLite + TOS 快照恢复
 
 ## 技术与运行方式
@@ -30,7 +32,7 @@ Layra 是一款支持桌面和手机的个人 AI 衣柜与穿搭助手。用户�
 - 生产镜像目标平台为 `linux/amd64`
 - 火山引擎 veFaaS Web 应用函数、TOS、Serverless API 网关
 - 阿里云百炼 `Qwen3-VL-Flash`、`Qwen-Image 2.0`
-- 火山方舟 Seedream 5.0 Lite 用于多参考图试穿；效果图沿用用户全身原图的画幅与最终像素尺寸
+- 火山方舟 Seedream 5.0 Lite 用于多参考图试穿；上传全身照时沿用原图画幅与最终像素尺寸，未上传时生成竖版不露脸假人效果图
 
 全身照处理是两段式的：视觉模型先识别上衣、下装、鞋履、帽子、包和配饰并逐件裁剪，ImageX `productv2` 再负责每个单品的像素级去背景。`productv2` 本身不是多单品检测器，不能直接替代第一段。穿着照中被人体遮挡、结构不完整的衣物会转入生成式补全，不会把残片当成完整商品图。
 
@@ -75,9 +77,15 @@ npm run build
 
 ```dotenv
 ENV=prod
-INVITE_CODES=<逗号分隔的高熵邀请码，每个至少 12 个字符>
+INVITE_CODES=<启用邀请码入口时配置，逗号分隔，每个至少 12 个字符>
 SESSION_SECRET=<至少 32 个字符的随机密钥>
 OWNER_ID_SECRET=<另一份至少 32 个字符的随机密钥>
+
+# 可选：在 Agent Identity UserPool 创建 Web 客户端后配置；只在服务端运行时读取
+AGENT_IDENTITY_ISSUER=<用户池 OIDC issuer，精确复制运行时信息>
+AGENT_IDENTITY_CLIENT_ID=<Web 客户端 ID>
+AGENT_IDENTITY_CLIENT_SECRET=<Web 客户端 Secret>
+AGENT_IDENTITY_REDIRECT_URI=https://sidcq5h51g43rsuddsnda.apigateway-cn-beijing.volceapi.com/api/auth/agent/callback
 
 DASHSCOPE_API_KEY=<secret>
 DASHSCOPE_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
@@ -96,7 +104,7 @@ ARK_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
 # 有 Ark 配置时默认作为衣柜识别主链路；设为 dashscope 才会优先阿里云。
 WARDROBE_VISION_PROVIDER=volcengine
 ARK_IMAGE_MODEL=doubao-seedream-5-0-lite-260128
-# 仅作为 Seedream 的生成像素预算；输出宽高比及最终像素尺寸始终跟随用户全身原图。
+# 仅作为 Seedream 的生成像素预算；上传全身照时，输出宽高比及最终像素尺寸跟随原图。
 ARK_IMAGE_SIZE=1728x2304
 # 可选：百炼生成服务欠费或鉴权失败时，商品图自动切换到这组 Seedream 配置。
 ARK_GARMENT_RECONSTRUCTION_MODEL=
@@ -132,7 +140,10 @@ ImageX 调用使用当前 veFaaS 请求的 Role STS 凭据，因此该 Role 除 
 - 邀请码会稳定映射为用户 ID，所有数据查询均按该 ID 隔离。
 - 轮换 `SESSION_SECRET` 会让全部用户退出登录。
 - 轮换 `OWNER_ID_SECRET` 或替换已使用的邀请码会改变用户 ID，使原衣柜看起来“消失”。上线后不要随意轮换；确需轮换时先做数据迁移。
-- 生产缺少或误配任一认证变量时，接口会拒绝服务，不能降级成匿名访问。
+- Agent Identity 账号按 issuer 和用户 `sub` 派生独立衣柜 ID，不会自动继承邀请码衣柜或旧 Supabase 账号衣柜。需要合并旧数据时，先确认账号归属并单独迁移。更换用户池 issuer 或 `OWNER_ID_SECRET` 也会改变映射，必须先规划迁移。
+- 在 Agent Identity UserPool 中启用需要的注册、登录、找回密码和外部身份提供商，并创建 Web 客户端。将 `AGENT_IDENTITY_REDIRECT_URI` 的完整地址加入允许的回调 URL。应用从 issuer 的 discovery 文档读取授权、令牌和公钥端点，并使用 Authorization Code + PKCE 验证 ID Token。未配置时保留邀请码入口。
+- 应用退出会清除本站会话；若用户池托管登录页仍有单点登录会话，下次点击账号登录可能自动识别同一账号。公用设备应同时退出身份服务或使用无痕窗口。
+- 生产缺少或误配 `SESSION_SECRET`、`OWNER_ID_SECRET` 时，账号和邀请码会话接口会拒绝服务，不能降级成匿名访问；未配置 `INVITE_CODES` 时邀请码入口不可用。
 
 ## 既有本地数据迁移
 

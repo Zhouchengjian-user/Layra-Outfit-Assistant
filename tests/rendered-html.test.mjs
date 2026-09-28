@@ -270,7 +270,7 @@ test("业务逻辑保留：第二阶段个人模特与可恢复穿搭工作流",
   assert.match(outfitClient, /\/api\/outfits\/visualize/);
   assert.match(outfitClient, /pollRecommendationTask/);
   assert.match(outfitClient, /pollVisualizationTask/);
-  assert.match(page, /三套衣柜方案/);
+  assert.match(page, /visible\.length}套衣柜方案/);
   assert.match(modelApi, /model-profiles/);
   assert.match(modelApi, /storageExists/);
   assert.match(modelApi, /DELETE FROM model_profiles WHERE owner_id/);

@@ -9,16 +9,6 @@ const cities: Record<string, [number, number]> = {
   合肥: [31.8206, 117.2272], 南昌: [28.682, 115.8579], 贵阳: [26.647, 106.6302],
 };
 
-function nearestCity(lat: number, lon: number): string {
-  let best = "杭州";
-  let bestDist = Infinity;
-  for (const [name, [clat, clon]] of Object.entries(cities)) {
-    const dist = (lat - clat) ** 2 + (lon - clon) ** 2;
-    if (dist < bestDist) { bestDist = dist; best = name; }
-  }
-  return best;
-}
-
 function weatherText(code: number) {
   if ([51, 53, 55, 56, 57, 61, 63, 65, 80, 81, 82].includes(code)) return "有小雨";
   if ([71, 73, 75, 77, 85, 86].includes(code)) return "有雪";
@@ -29,19 +19,39 @@ function weatherText(code: number) {
 
 export async function GET(request: Request) {
   const url = new URL(request.url);
-  const requestedCity = (url.searchParams.get("city") || "").slice(0, 12);
+  const requestedCity = (url.searchParams.get("city") || "").trim().slice(0, 40);
   const latitude = Number(url.searchParams.get("lat"));
   const longitude = Number(url.searchParams.get("lon"));
-  const hasGeo = Number.isFinite(latitude) && Number.isFinite(longitude) && (latitude !== 0 || longitude !== 0);
+  const hasGeo = Number.isFinite(latitude) && Number.isFinite(longitude)
+    && Math.abs(latitude) <= 90 && Math.abs(longitude) <= 180
+    && (latitude !== 0 || longitude !== 0);
 
   let city = requestedCity || "杭州";
-  const fallback = cities[city] || cities.杭州;
+  let coordinates = cities[city];
+  if (!hasGeo && requestedCity && !coordinates) {
+    try {
+      const search = new URL("https://geocoding-api.open-meteo.com/v1/search");
+      search.searchParams.set("name", requestedCity);
+      search.searchParams.set("count", "1");
+      search.searchParams.set("language", "zh");
+      const result = await fetch(search, { signal: AbortSignal.timeout(8_000) });
+      if (!result.ok) throw new Error("城市查询暂时不可用");
+      const data = await result.json() as { results?: Array<{ name: string; latitude: number; longitude: number }> };
+      const match = data.results?.[0];
+      if (!match) return Response.json({ error: "没有找到这个城市，请换个名称" }, { status: 404 });
+      city = match.name;
+      coordinates = [match.latitude, match.longitude];
+    } catch {
+      return Response.json({ error: "城市查询暂时不可用，请稍后重试" }, { status: 503 });
+    }
+  }
+  const fallback = coordinates || cities.杭州;
   const lat = hasGeo ? latitude : fallback[0];
   const lon = hasGeo ? longitude : fallback[1];
 
-  // 定位（传经纬度但没传城市名）时，就近匹配预设城市名。
+  // Coordinates supply accurate weather; avoid labelling a distant city as the user's location.
   if (hasGeo && !requestedCity) {
-    city = nearestCity(lat, lon);
+    city = "当前位置";
   }
 
   try {

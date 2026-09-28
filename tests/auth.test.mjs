@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   AuthConfigurationError,
+  agentIdentityUserId,
   SESSION_COOKIE_NAME,
   authenticateInvite,
   createSessionToken,
@@ -58,5 +59,27 @@ test("production auth fails closed for placeholder or weak configuration", () =>
     OWNER_ID_SECRET: "replace_with_owner_secret_12345678",
   }, () => {
     assert.throws(() => authenticateInvite("replace_with_invite_code"), AuthConfigurationError);
+  });
+});
+
+test("Agent Identity account sessions use a stable isolated owner without changing invite owners", () => {
+  withAuthEnv({
+    NODE_ENV: "production",
+    ENV: "prod",
+    INVITE_CODES: "invite-7Kp2Qm9Xv4Ls",
+    SESSION_SECRET: "session-secret-for-tests-only-1234567890",
+    OWNER_ID_SECRET: "owner-secret-for-tests-only-0987654321",
+  }, () => {
+    const inviteId = authenticateInvite("invite-7Kp2Qm9Xv4Ls");
+    const accountId = agentIdentityUserId("https://identity.example.test/pool", "user-123");
+    assert.match(accountId, /^usr-[a-f0-9]{40}$/);
+    assert.notEqual(accountId, inviteId);
+    assert.equal(accountId, agentIdentityUserId("https://identity.example.test/pool", "user-123"));
+    assert.notEqual(accountId, agentIdentityUserId("https://identity.example.test/other", "user-123"));
+    assert.notEqual(accountId, agentIdentityUserId("https://identity.example.test/pool", "user-456"));
+    const token = createSessionToken(accountId, Date.now(), "account");
+    assert.equal(verifySessionToken(token)?.provider, "account");
+    assert.equal(verifySessionToken(token)?.userId, accountId);
+    assert.throws(() => createSessionToken(accountId), /请先登录/);
   });
 });

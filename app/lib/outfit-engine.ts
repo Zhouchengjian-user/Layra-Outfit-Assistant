@@ -58,6 +58,15 @@ const sceneStyles: Record<string, string[]> = {
   "通勤": ["通勤", "简约", "利落"], "约会": ["温柔", "精致", "约会"], "休闲": ["休闲", "松弛感", "简约"],
   "聚会": ["聚会", "时髦", "个性"], "运动": ["运动", "休闲", "活力"], "正式活动": ["正式", "精致", "简约"],
 };
+const sceneOccasionAliases: Record<string, string[]> = {
+  "通勤": ["通勤", "上班", "商务", "开会"],
+  "休闲": ["休闲", "逛街", "旅行", "居家"],
+  "运动": ["运动", "户外"],
+};
+
+function matchesOccasion(item: WardrobeMatchItem, occasion: string) {
+  return (sceneOccasionAliases[occasion] || [occasion]).some(value => item.aiTags.occasions.includes(value));
+}
 
 function clamp(value: number, min = 0, max = 100) {
   return Math.max(min, Math.min(max, value));
@@ -126,6 +135,15 @@ function layerOf(item: WardrobeMatchItem) {
   return "top";
 }
 
+/** Shoes and accessories do not make an otherwise identical outfit a new look. */
+export function outfitCoreKey(items: Array<Pick<WardrobeMatchItem, "id" | "category">>) {
+  return items
+    .filter(item => !["鞋子", "鞋履", "帽子", "腰带", "包", "首饰", "配饰", "其他配饰"].includes(item.category))
+    .map(item => item.id)
+    .sort()
+    .join("|");
+}
+
 function familyOf(item: WardrobeMatchItem) {
   return item.aiTags.colorFamily || normalizeGarmentAITags(null, { category: item.category, color: item.colorName }).colorFamily;
 }
@@ -176,7 +194,7 @@ function silhouetteScore(items: WardrobeMatchItem[], profile: Record<string, unk
 }
 
 function itemContextScore(item: WardrobeMatchItem, intent: StylingIntent) {
-  const occasion = item.aiTags.occasions.includes(intent.occasion) ? 100 : 78 - Math.abs(item.aiTags.formality - intent.formality) * 10;
+  const occasion = matchesOccasion(item, intent.occasion) ? 100 : 78 - Math.abs(item.aiTags.formality - intent.formality) * 10;
   const weather = 100 - Math.abs(item.aiTags.warmth - intent.warmth) * 18;
   const styleMatches = item.aiTags.styles.filter(style => intent.styles.some(target => target.includes(style) || style.includes(target))).length;
   const style = clamp(68 + styleMatches * 12);
@@ -196,7 +214,7 @@ function outfitTitle(items: WardrobeMatchItem[], intent: StylingIntent) {
 
 function scoreCandidate(items: WardrobeMatchItem[], intent: StylingIntent, profile: Record<string, unknown> = {}) {
   const average = (values: number[]) => values.reduce((sum, value) => sum + value, 0) / Math.max(values.length, 1);
-  const occasion = average(items.map(item => item.aiTags.occasions.includes(intent.occasion) ? 100 : 78 - Math.abs(item.aiTags.formality - intent.formality) * 10));
+  const occasion = average(items.map(item => matchesOccasion(item, intent.occasion) ? 100 : 78 - Math.abs(item.aiTags.formality - intent.formality) * 10));
   const weather = average(items.map(item => 100 - Math.abs(item.aiTags.warmth - intent.warmth) * 18));
   const styleMatches = items.flatMap(item => item.aiTags.styles).filter(style => intent.styles.some(target => target.includes(style) || style.includes(target))).length;
   const style = clamp(72 + styleMatches * 7);
@@ -238,12 +256,22 @@ function jaccard(left: string[], right: string[]) {
 
 export function selectDiverseCandidates(candidates: OutfitCandidate[], count: number, maximumOverlap = .68) {
   const selected: OutfitCandidate[] = [];
+  const coreKeys = new Set<string>();
   for (const candidate of candidates) {
-    if (selected.every(existing => jaccard(existing.itemIds, candidate.itemIds) <= maximumOverlap)) selected.push(candidate);
+    const coreKey = outfitCoreKey(candidate.items);
+    if (coreKeys.has(coreKey)) continue;
+    if (selected.every(existing => jaccard(existing.itemIds, candidate.itemIds) <= maximumOverlap)) {
+      selected.push(candidate);
+      coreKeys.add(coreKey);
+    }
     if (selected.length === count) return selected;
   }
   for (const candidate of candidates) {
-    if (!selected.some(existing => existing.itemIds.join("|") === candidate.itemIds.join("|"))) selected.push(candidate);
+    const coreKey = outfitCoreKey(candidate.items);
+    if (!coreKeys.has(coreKey)) {
+      selected.push(candidate);
+      coreKeys.add(coreKey);
+    }
     if (selected.length === count) break;
   }
   return selected;

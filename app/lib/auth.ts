@@ -10,12 +10,14 @@ const USER_ID_PATTERN = /^usr-[a-f0-9]{40}$/;
 type SessionPayload = {
   v: 1;
   sub: string;
+  auth?: "account";
   iat: number;
   exp: number;
 };
 
 export type AuthSession = {
   userId: string;
+  provider: "invite" | "account";
   expiresAt: number;
 };
 
@@ -41,20 +43,24 @@ function configuredInviteCodes() {
   return [...new Set(env("INVITE_CODES").split(",").map(value => value.trim()).filter(Boolean))];
 }
 
+export function isInviteLoginAvailable() {
+  return configuredInviteCodes().length > 0;
+}
+
 export function isAuthenticationRequired() {
   return process.env.NODE_ENV === "production"
     || env("ENV").toLowerCase() === "prod"
-    || Boolean(env("INVITE_CODES") || env("SESSION_SECRET") || env("OWNER_ID_SECRET"));
+    || Boolean(env("INVITE_CODES") || env("SESSION_SECRET") || env("OWNER_ID_SECRET") || env("AGENT_IDENTITY_ISSUER"));
 }
 
-function authConfiguration() {
+function authConfiguration(requireInvite = true) {
   const inviteCodes = configuredInviteCodes();
   const sessionSecret = env("SESSION_SECRET");
   const ownerIdSecret = env("OWNER_ID_SECRET");
-  const hasPlaceholder = [...inviteCodes, sessionSecret, ownerIdSecret].some(value => value.toLowerCase().startsWith("replace_with_"));
+  const hasPlaceholder = [...(requireInvite ? inviteCodes : []), sessionSecret, ownerIdSecret].some(value => value.toLowerCase().startsWith("replace_with_"));
   if (
-    !inviteCodes.length
-    || inviteCodes.some(code => code.length < 12 || code.length > 128)
+    (requireInvite && !inviteCodes.length)
+    || (requireInvite && inviteCodes.some(code => code.length < 12 || code.length > 128))
     || sessionSecret.length < 32
     || ownerIdSecret.length < 32
     || sessionSecret === ownerIdSecret
@@ -90,18 +96,25 @@ export function authenticateInvite(inviteCode: string): string | null {
   return match ? deriveUserId(match, ownerIdSecret) : null;
 }
 
+export function agentIdentityUserId(issuer: string, subject: string) {
+  if (!issuer || !subject || issuer.length > 2048 || subject.length > 2048) throw new AuthenticationRequiredError();
+  const { ownerIdSecret } = authConfiguration(false);
+  return deriveUserId(`agent-identity:${issuer}\0${subject}`, ownerIdSecret);
+}
+
 function signTokenBody(body: string, sessionSecret: string) {
   return createHmac("sha256", sessionSecret).update(`${TOKEN_VERSION}.${body}`, "utf8").digest("base64url");
 }
 
-export function createSessionToken(userId: string, now = Date.now()) {
+export function createSessionToken(userId: string, now = Date.now(), provider: "invite" | "account" = "invite") {
   if (!USER_ID_PATTERN.test(userId)) throw new AuthenticationRequiredError();
-  const { inviteCodes, sessionSecret, ownerIdSecret } = authConfiguration();
-  if (!allowedUserIds(inviteCodes, ownerIdSecret).has(userId)) throw new AuthenticationRequiredError();
+  const { inviteCodes, sessionSecret, ownerIdSecret } = authConfiguration(provider === "invite");
+  if (provider === "invite" && !allowedUserIds(inviteCodes, ownerIdSecret).has(userId)) throw new AuthenticationRequiredError();
   const issuedAt = Math.floor(now / 1000);
   const payload: SessionPayload = {
     v: 1,
     sub: userId,
+    ...(provider === "account" ? { auth: "account" as const } : {}),
     iat: issuedAt,
     exp: issuedAt + SESSION_MAX_AGE_SECONDS,
   };
@@ -121,9 +134,9 @@ function cookieValue(request: Request, name: string) {
 
 export function verifySessionToken(token: string, now = Date.now()): AuthSession | null {
   if (!isAuthenticationRequired()) {
-    return { userId: "usr-0000000000000000000000000000000000000000", expiresAt: now + SESSION_MAX_AGE_SECONDS * 1000 };
+    return { userId: "usr-0000000000000000000000000000000000000000", provider: "invite", expiresAt: now + SESSION_MAX_AGE_SECONDS * 1000 };
   }
-  const { inviteCodes, sessionSecret, ownerIdSecret } = authConfiguration();
+  const { inviteCodes, sessionSecret, ownerIdSecret } = authConfiguration(false);
   const [version, body, signature, ...rest] = token.split(".");
   if (version !== TOKEN_VERSION || !body || !signature || rest.length) return null;
   const expectedSignature = Buffer.from(signTokenBody(body, sessionSecret), "utf8");
@@ -140,8 +153,10 @@ export function verifySessionToken(token: string, now = Date.now()): AuthSession
       || (payload.exp as number) <= nowSeconds
       || (payload.exp as number) - (payload.iat as number) !== SESSION_MAX_AGE_SECONDS
     ) return null;
-    if (!allowedUserIds(inviteCodes, ownerIdSecret).has(payload.sub)) return null;
-    return { userId: payload.sub, expiresAt: (payload.exp as number) * 1000 };
+    if (payload.auth !== undefined && payload.auth !== "account") return null;
+    const provider = payload.auth === "account" ? "account" : "invite";
+    if (provider === "invite" && !allowedUserIds(inviteCodes, ownerIdSecret).has(payload.sub)) return null;
+    return { userId: payload.sub, provider, expiresAt: (payload.exp as number) * 1000 };
   } catch {
     return null;
   }

@@ -13,6 +13,7 @@ import {
 import { normalizeGarmentAITags } from "../../../lib/garment-tags";
 import {
   buildOutfitCandidates,
+  outfitCoreKey,
   selectDiverseCandidates,
   type OutfitCandidate,
   type StyleIntensity,
@@ -111,12 +112,12 @@ function normalizeResult(value: Record<string, unknown>, candidates: OutfitCandi
     if (!entry || typeof entry !== "object") continue;
     const look = entry as Record<string, unknown>;
     const candidate = candidateMap.get(String(look.candidateId || ""));
-    if (!candidate || chosen.some(selection => selection.candidate.id === candidate.id || candidateOverlap(selection.candidate, candidate) > .68)) continue;
+    if (!candidate || chosen.some(selection => outfitCoreKey(selection.candidate.items) === outfitCoreKey(candidate.items) || candidateOverlap(selection.candidate, candidate) > .68)) continue;
     chosen.push({ candidate, look });
     if (chosen.length === 3) break;
   }
   for (const candidate of selectDiverseCandidates(candidates, 3, .68)) {
-    if (!chosen.some(selection => selection.candidate.id === candidate.id)) chosen.push({ candidate });
+    if (!chosen.some(selection => outfitCoreKey(selection.candidate.items) === outfitCoreKey(candidate.items))) chosen.push({ candidate });
     if (chosen.length === 3) break;
   }
   return {
@@ -180,14 +181,20 @@ async function handlePOST(request: Request) {
         aiTags: normalizeGarmentAITags(parsed, { category: item.category, color: item.colorName, season: item.season, style: item.style }),
       };
     });
-    const { intent, candidates } = buildOutfitCandidates(wardrobe, {
+    const { intent, candidates: allCandidates } = buildOutfitCandidates(wardrobe, {
       scene,
       prompt,
       weather: body.weather,
       profile: body.profile,
       intensity: body.intensity,
     });
-    if (!candidates.length) return ownerJson({ error: "衣柜暂时组合不出完整穿搭，请至少添加上装、下装或连衣裙" }, owner, 400);
+    const rejected = await dbAll<{ coreKey: string }>(
+      "SELECT core_key AS coreKey FROM outfit_feedback WHERE owner_id = ? AND action = 'dislike'",
+      [owner.id],
+    );
+    const rejectedKeys = new Set(rejected.map(item => item.coreKey));
+    const candidates = allCandidates.filter(candidate => !rejectedKeys.has(outfitCoreKey(candidate.items)));
+    if (!candidates.length) return ownerJson({ error: allCandidates.length ? "当前不同的核心搭配已看完，添加新的上衣、下装或外套后再试" : "衣柜暂时组合不出完整穿搭，请至少添加上装、下装或连衣裙" }, owner, 400);
 
     const started = await startAiTask(owner.id, "outfit-recommendation", idempotencyKey, JSON.stringify({ ...body, scene, prompt }));
     taskId = started.task.id;

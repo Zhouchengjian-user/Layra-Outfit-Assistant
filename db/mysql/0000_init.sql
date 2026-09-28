@@ -59,6 +59,17 @@ CREATE TABLE IF NOT EXISTS saved_outfits (
   KEY idx_saved_outfits_owner_created (owner_id, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS outfit_feedback (
+  id VARCHAR(36) NOT NULL,
+  owner_id VARCHAR(64) NOT NULL,
+  core_key VARCHAR(255) NOT NULL,
+  action VARCHAR(20) NOT NULL,
+  item_ids TEXT NOT NULL,
+  created_at BIGINT NOT NULL,
+  PRIMARY KEY (id),
+  KEY idx_outfit_feedback_owner_created (owner_id, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS chat_history (
   id VARCHAR(36) NOT NULL,
   owner_id VARCHAR(64) NOT NULL,

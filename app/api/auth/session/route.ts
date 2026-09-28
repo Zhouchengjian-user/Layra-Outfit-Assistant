@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server";
-import { AuthConfigurationError, getSessionFromRequest } from "../../../lib/auth";
+import { AuthConfigurationError, getSessionFromRequest, isInviteLoginAvailable } from "../../../lib/auth";
+import { isAgentIdentityAvailable } from "../../../lib/agent-identity";
 
 export async function GET(request: Request) {
   try {
     const session = getSessionFromRequest(request);
-    const response = NextResponse.json({ authenticated: Boolean(session) }, { status: session ? 200 : 401 });
+    const response = NextResponse.json({ authenticated: Boolean(session), provider: session?.provider, inviteAvailable: isInviteLoginAvailable(), accountAvailable: isAgentIdentityAvailable() }, { status: session ? 200 : 401 });
     response.headers.set("Cache-Control", "no-store");
     return response;
   } catch (error) {

@@ -3,11 +3,12 @@
 /* Dynamic R2 and user-uploaded image URLs cannot use a fixed Next Image loader. */
 /* eslint-disable @next/next/no-img-element */
 
-import { useCallback, useEffect, useRef, useState, type SyntheticEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent, type SyntheticEvent } from "react";
 import { processGarmentUpload, type ProcessedGarmentImage } from "./lib/garment-image";
 import { garmentTagLabels, type GarmentAITags } from "./lib/garment-tags";
 import { ApiError, createIdempotencyKey, requestJson } from "./lib/api-client";
 import {
+  buildOutfitReferenceBoard,
   buildTryOnQuickPreview,
   pollRecommendationTask,
   pollVisualizationTask,
@@ -24,6 +25,7 @@ import { LayraMark } from "./components/layra-mark";
 import { ModalFrame } from "./components/modal-frame";
 import { WardrobeCarousel } from "./components/wardrobe-carousel";
 import { STARTER_WARDROBE_SIZE_PER_GENDER } from "./lib/starter-wardrobe-config";
+import { outfitCoreKey } from "./lib/outfit-engine";
 
 type Tab = "home" | "wardrobe" | "create" | "inspiration" | "saved" | "profile";
 type Scene = "通勤" | "约会" | "休闲" | "聚会" | "运动" | "正式活动";
@@ -51,6 +53,7 @@ type SavedOutfit = {
   createdAt: number;
   items: Array<{ id: string; name: string; category: string; colorName: string; imageUrl: string }>;
 };
+type OutfitFeedback = { id: string; coreKey: string; action: "dislike" | "worn"; createdAt: number };
 type HistoryEntry = { id: string; scene: string; prompt: string; result: unknown; createdAt: number };
 type TryOnContext = { itemIds: string[]; title: string; scene: string; recommendationId?: string };
 
@@ -140,6 +143,7 @@ function parseSwapCategory(text: string): string | null {
 
 const scenes: Scene[] = ["通勤", "约会", "休闲", "聚会", "运动", "正式活动"];
 const styleOptions = ["简约", "松弛感", "轻复古", "通勤", "运动", "甜酷"];
+const garmentOccasions = ["通勤", "上班", "商务", "开会", "上课", "约会", "聚会", "逛街", "正式活动", "休闲", "运动", "旅行", "户外", "居家"];
 const lastRecommendationTaskKey = "yida:last-recommendation-task";
 const lastVisualizationTaskKey = "yida:last-visualization-task";
 const lastVisualizationLookKey = "yida:last-visualization-look";
@@ -231,13 +235,13 @@ function ModelProfileStrip({ profile, uploading, onUpload }: { profile: ModelPro
     <button className="model-profile-preview" onClick={onUpload} aria-label={profile ? "更换个人全身照" : "上传个人全身照"}>
       {profile ? <img src={profile.imageUrl} alt="我的个人模特全身照" onError={hideUnavailableImage} /> : <span>＋</span>}
     </button>
-    <div><span className="micro-label">MY AI MODEL</span><b>{profile ? "个人模特已准备好" : "先建立你的个人模特"}</b><small>{profile ? "推荐完成后，可直接生成你穿上这套的完整效果图" : "上传一张正面、从头到脚完整入镜的全身照"}</small></div>
+    <div><span className="micro-label">MY AI MODEL</span><b>{profile ? "个人模特已准备好" : "可选：建立个人模特"}</b><small>{profile ? "推荐完成后，可生成本人试穿效果图" : "不上传照片也能生成不露脸假人效果图"}</small></div>
     <button className="model-upload-action" disabled={uploading} onClick={onUpload}>{uploading ? "正在保存…" : profile ? "更换照片" : "上传全身照"}</button>
   </section>;
 }
 
 function YidaApp() {
-  const { logout } = useAuth();
+  const { logout, provider } = useAuth();
   const [tab, setTab] = useState<Tab>("home");
   const [prompt, setPrompt] = useState("");
   const [homeRatio, setHomeRatio] = useState<"1:1" | "3:4" | "9:16">("3:4");
@@ -257,6 +261,8 @@ function YidaApp() {
   const [tryOnQuickUrl, setTryOnQuickUrl] = useState("");
   const [showTryOn, setShowTryOn] = useState(false);
   const [weather, setWeather] = useState<WeatherContext>({ city: "杭州", temperature: 24, apparent: 25, condition: "多云", precipitation: 0, wind: 8, source: "fallback" });
+  const [weatherCityInput, setWeatherCityInput] = useState("");
+  const [weatherSearching, setWeatherSearching] = useState(false);
   const [wardrobeItems, setWardrobeItems] = useState<WardrobeItem[]>([]);
   const [wardrobeLoading, setWardrobeLoading] = useState(true);
   const [starterLoading, setStarterLoading] = useState(false);
@@ -275,6 +281,7 @@ function YidaApp() {
   const [reviewResult, setReviewResult] = useState<OutfitReview | null>(null);
   const [reviewLoading, setReviewLoading] = useState(false);
   const [savedOutfits, setSavedOutfits] = useState<SavedOutfit[]>([]);
+  const [outfitFeedback, setOutfitFeedback] = useState<OutfitFeedback[]>([]);
   const [saveLoading, setSaveLoading] = useState(false);
   const [tryOnContext, setTryOnContext] = useState<TryOnContext | null>(null);
   const [showSwapModal, setShowSwapModal] = useState(false);
@@ -284,6 +291,8 @@ function YidaApp() {
   const [stylePrefs, setStylePrefs] = useState<string[]>(["松弛感", "简约"]);
   const [styleIntensity] = useState<StyleIntensity>("有点风格");
   const [city, setCity] = useState("杭州");
+  const [locationCoords, setLocationCoords] = useState<{ lat: number; lon: number } | null>(null);
+  const [cityHydrated, setCityHydrated] = useState(false);
   const [showWeather, setShowWeather] = useState(false);
   const [showProfileEdit, setShowProfileEdit] = useState(false);
   const [showStarterPicker, setShowStarterPicker] = useState(false);
@@ -330,15 +339,18 @@ function YidaApp() {
   const tryOnCacheKey = useCallback((itemIds: string[]) => [
     "source-frame-v4",
     modelProfile?.updatedAt || 0,
+    profile.gender,
     [...itemIds].sort().join("|"),
     scene,
     prompt.trim(),
-  ].join("::"), [modelProfile?.updatedAt, prompt, scene]);
+  ].join("::"), [modelProfile?.updatedAt, profile.gender, prompt, scene]);
 
   const startTryOnQuickPreview = useCallback((jobId: string, items: OutfitRecommendation["items"], title: string) => {
-    if (!modelProfile?.imageUrl || !items.length) return;
+    if (!items.length) return;
     tryOnPreviewJobRef.current = jobId;
-    void buildTryOnQuickPreview(modelProfile.imageUrl, items, title)
+    void (modelProfile?.imageUrl
+      ? buildTryOnQuickPreview(modelProfile.imageUrl, items, title)
+      : buildOutfitReferenceBoard(items))
       .then(blob => {
         if (tryOnPreviewJobRef.current !== jobId) return;
         replaceTryOnQuickUrl(URL.createObjectURL(blob));
@@ -374,7 +386,6 @@ function YidaApp() {
 
   const generateTryOnForCreate = async () => {
     if (selectedItems.length < 2) { notify("请先选择至少 2 件单品"); return; }
-    if (!modelProfile) { modelFileRef.current?.click(); return; }
     if (tryOnJobActiveRef.current) { setShowTryOn(true); notify("高清效果图仍在生成，可以先看搭配速览"); return; }
     const cacheKey = tryOnCacheKey(selectedItems);
     const cachedUrl = tryOnCacheRef.current.get(cacheKey);
@@ -446,6 +457,37 @@ function YidaApp() {
     }
   };
 
+  const saveRecommendedOutfit = async (recommendation: OutfitRecommendation) => {
+    try {
+      await requestJson("/api/outfits/saved", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ itemIds: recommendation.itemIds, title: recommendation.title, scene }),
+        timeoutMs: 20_000,
+      });
+      await loadSavedOutfits();
+      notify("已收藏这套搭配");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "收藏失败");
+    }
+  };
+
+  const recordOutfitFeedback = async (recommendation: OutfitRecommendation, action: OutfitFeedback["action"]) => {
+    try {
+      const { data } = await requestJson<{ feedback: OutfitFeedback }>("/api/outfits/feedback", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ itemIds: recommendation.itemIds, action }), timeoutMs: 20_000,
+      });
+      setOutfitFeedback(current => current.some(item => item.id === data.feedback.id) ? current : [data.feedback, ...current]);
+      if (action === "dislike") {
+        setRecommendations(current => current.filter(item => outfitCoreKey(item.items) !== data.feedback.coreKey));
+        if (selectedRecommendationId === recommendation.id) setSelectedRecommendationId(null);
+        notify("已排除这组核心搭配");
+      } else notify("已记录：今天穿这套");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "反馈保存失败");
+    }
+  };
+
   const deleteSavedOutfit = async (id: string) => {
     try {
       await requestJson(`/api/outfits/saved?id=${encodeURIComponent(id)}`, { method: "DELETE", timeoutMs: 20_000 });
@@ -502,6 +544,9 @@ function YidaApp() {
     let active = true;
     requestJson<{ saved: SavedOutfit[] }>("/api/outfits/saved", { timeoutMs: 15_000 })
       .then(({ data }) => { if (active) setSavedOutfits(data.saved || []); })
+      .catch(() => undefined);
+    requestJson<{ feedback: OutfitFeedback[] }>("/api/outfits/feedback", { timeoutMs: 15_000 })
+      .then(({ data }) => { if (active) setOutfitFeedback(data.feedback || []); })
       .catch(() => undefined);
     return () => { active = false; };
   }, [ownerReady]);
@@ -581,19 +626,32 @@ function YidaApp() {
   }, []);
 
   useEffect(() => {
+    let restoredCity = "";
+    let restoredLocation: { lat: number; lon: number } | null = null;
     try {
-      const saved = localStorage.getItem("yida:city");
-      if (saved) {
-        const timer = window.setTimeout(() => setCity(saved), 0);
-        return () => window.clearTimeout(timer);
+      const location = localStorage.getItem("yida:location");
+      if (location) {
+        const coords = JSON.parse(location) as { lat?: number; lon?: number };
+        if (typeof coords.lat === "number" && typeof coords.lon === "number" && Math.abs(coords.lat) <= 90 && Math.abs(coords.lon) <= 180) {
+          restoredLocation = { lat: coords.lat, lon: coords.lon };
+        }
       }
+      restoredCity = localStorage.getItem("yida:city") || "";
     } catch { /* 忽略 */ }
-    return undefined;
+    const timer = window.setTimeout(() => {
+      if (restoredLocation) {
+        setLocationCoords(restoredLocation);
+        setCity("当前位置");
+      } else if (restoredCity && restoredCity !== "当前位置") setCity(restoredCity);
+      setCityHydrated(true);
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, []);
 
   useEffect(() => {
+    if (!cityHydrated) return;
     try { localStorage.setItem("yida:city", city); } catch { /* 忽略 */ }
-  }, [city]);
+  }, [city, cityHydrated]);
 
   useEffect(() => {
     try {
@@ -610,41 +668,22 @@ function YidaApp() {
   }, []);
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    try {
-      if (localStorage.getItem("yida:city")) return; // 已有常驻城市，不自动定位
-    } catch { return; }
-    if (!navigator.geolocation) return;
-    navigator.geolocation.getCurrentPosition(async position => {
-      try {
-        const { data: payload } = await requestJson<WeatherContext>(
-          `/api/weather?lat=${position.coords.latitude}&lon=${position.coords.longitude}`,
-          { timeoutMs: 15_000 },
-        );
-        setWeather(payload);
-        if (payload.city) {
-          setCity(payload.city);
-          try { localStorage.setItem("yida:city", payload.city); } catch { /* 忽略 */ }
-        }
-      } catch { /* 定位天气失败，保持默认 */ }
-    }, () => { /* 拒绝定位，保持默认城市 */ }, { enableHighAccuracy: false, timeout: 8000 });
-  }, []);
-
-  useEffect(() => {
     let active = true;
     const profileRequest = ownerReady
       ? requestJson<{ profile?: ModelProfile | null }>("/api/model-profile", { timeoutMs: 15_000 }).then(result => result.data)
       : Promise.resolve({ profile: null });
     Promise.all([
       profileRequest,
-      requestJson<WeatherContext>(`/api/weather?city=${encodeURIComponent(city)}`, { timeoutMs: 15_000 }).then(result => result.data),
+      requestJson<WeatherContext>(locationCoords
+        ? `/api/weather?lat=${locationCoords.lat}&lon=${locationCoords.lon}`
+        : `/api/weather?city=${encodeURIComponent(city)}`, { timeoutMs: 15_000 }).then(result => result.data),
     ]).then(([modelPayload, weatherPayload]) => {
       if (!active) return;
       setModelProfile(modelPayload.profile || null);
       if (weatherPayload.temperature !== undefined) setWeather(weatherPayload);
     }).catch(() => undefined);
     return () => { active = false; };
-  }, [city, ownerReady]);
+  }, [city, locationCoords, ownerReady]);
 
   useEffect(() => {
     let active = true;
@@ -847,7 +886,6 @@ function YidaApp() {
       ? recommendationOverride
       : recommendations.find(item => item.id === selectedRecommendationId);
     if (!recommendation) { notify("请先选择一套搭配"); return false; }
-    if (!modelProfile) { modelFileRef.current?.click(); return false; }
     if (tryOnJobActiveRef.current) { setShowTryOn(true); notify("高清效果图仍在生成，可以先看搭配速览"); return false; }
     const cacheKey = tryOnCacheKey(recommendation.itemIds);
     setTryOnContext({
@@ -1395,12 +1433,37 @@ function YidaApp() {
     if (!navigator.geolocation) { notify("当前设备不支持定位，请选择常驻城市"); return; }
     navigator.geolocation.getCurrentPosition(async position => {
       try {
-        const { data: payload } = await requestJson<WeatherContext>(`/api/weather?city=${encodeURIComponent(city)}&lat=${position.coords.latitude}&lon=${position.coords.longitude}`, { timeoutMs: 15_000 });
+        const { data: payload } = await requestJson<WeatherContext>(`/api/weather?lat=${position.coords.latitude}&lon=${position.coords.longitude}`, { timeoutMs: 15_000 });
+        const coords = { lat: position.coords.latitude, lon: position.coords.longitude };
+        localStorage.setItem("yida:location", JSON.stringify(coords));
+        setLocationCoords(coords);
         setWeather(payload);
+        setCity("当前位置");
         setShowWeather(false);
         notify("已根据当前位置更新天气");
       } catch { notify("天气暂时没有更新成功"); }
     }, () => notify("定位未授权，请选择常驻城市"), { enableHighAccuracy: false, timeout: 8000 });
+  };
+
+  const searchWeatherCity = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const query = weatherCityInput.trim();
+    if (!query || weatherSearching) return;
+    setWeatherSearching(true);
+    try {
+      const { data } = await requestJson<WeatherContext>(`/api/weather?city=${encodeURIComponent(query)}`, { timeoutMs: 20_000 });
+      localStorage.removeItem("yida:location");
+      setLocationCoords(null);
+      setWeather(data);
+      setCity(data.city);
+      setWeatherCityInput("");
+      setShowWeather(false);
+      notify(`已更新 ${data.city} 的天气`);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "没有找到这个城市");
+    } finally {
+      setWeatherSearching(false);
+    }
   };
 
   const closeTryOn = () => {
@@ -1450,7 +1513,8 @@ function YidaApp() {
       scene={scene} scope={scope} recommendations={recommendations} intent={outfitIntent}
       selectedId={selectedRecommendationId} setSelectedId={setSelectedRecommendationId}
       generateLooks={generateLooks} generateTryOn={generateTryOn} modelReady={Boolean(modelProfile)}
-      openModelUpload={() => modelFileRef.current?.click()} tryOnLoading={tryOnLoading} weather={weather}
+      onSave={saveRecommendedOutfit} onFeedback={recordOutfitFeedback} savedOutfits={savedOutfits} feedback={outfitFeedback}
+      tryOnLoading={tryOnLoading} weather={weather}
       chatMessages={chatMessages} chatInput={chatInput} setChatInput={setChatInput} sendChat={sendChat} chatTyping={chatTyping}
     />
   );
@@ -1632,7 +1696,7 @@ function YidaApp() {
           <div className="profile-overview-grid"><section className="profile-hero"><div className="big-avatar">{profile.nickname.slice(0, 1)}</div><div><h3>{profile.nickname}</h3><p>已保存的资料与偏好，会参与每次搭配推荐。</p><div className="profile-summary-chips"><span>{city}</span><span>{stylePrefs.length} 项风格偏好</span></div></div></section><ModelProfileStrip profile={modelProfile} uploading={modelUploading} onUpload={() => modelFileRef.current?.click()} /></div>
           <div className="profile-body-style-grid"><section className="body-card"><header><span>身形资料</span><small>用于判断版型与比例</small></header><div><span>性别</span><b>{profile.gender}</b></div><div><span>身高</span><b>{profile.height}<small> cm</small></b></div><div><span>体重</span><b>{profile.weight}<small> kg</small></b></div><div><span>身材比例</span><b>{profile.bodyType}</b></div></section><section className="taste-card"><span className="micro-label">STYLE DNA</span><h3>你的风格偏好</h3><p className="taste-help">点选喜欢的风格，LAYRA 会优先按这些方向推荐。</p><div className="preference-chips">{styleOptions.map(item => <button key={item} className={stylePrefs.includes(item) ? "active" : ""} onClick={() => toggleStyle(item)}>{stylePrefs.includes(item) ? "✓ " : "+ "}{item}</button>)}</div></section></div>
           <div className="profile-feature-grid"><section className="usage-card"><div><span>今日生成额度</span><b>{generationsLeft} / 5</b></div><div className="usage-track"><i style={{ width: `${generationsLeft * 20}%` }} /></div><small>每日 00:00 自动恢复</small></section><section className="points-card"><span>LAYRA 积分</span><b>260</b><small>上传衣服和完善衣柜可获得积分</small><button onClick={() => notify("积分商城将在后续版本开放")}>查看权益 →</button></section></div>
-          <div className="profile-lower-grid"><section className="profile-section"><div className="section-heading"><div><span className="micro-label">HISTORY · 30 DAYS</span><h3>最近记录</h3></div><Icon name="history" /></div>{history.length ? <div className="history-list">{history.map(item => <button key={item.id} onClick={() => replayHistory(item)}><span>{formatHistoryDate(item.createdAt)}</span><b>{item.scene}</b><p>{item.prompt}</p><i>›</i></button>)}</div> : <div className="profile-history-empty"><span><Icon name="history" /></span><b>还没有搭配记录</b><p>生成第一套推荐后，这里会保留最近 30 天的记录。</p><button onClick={() => setTab("home")}>去生成搭配</button></div>}</section><section className="profile-settings"><div className="section-heading"><div><h3>账户与偏好</h3><p>管理收藏、城市与隐私设置</p></div></div><div className="settings-list"><button onClick={() => setTab("saved")}>我的收藏 <span>{savedOutfits.length} 套 ›</span></button><button onClick={() => setShowWeather(true)}>常驻城市 <span>{city} ›</span></button><button onClick={() => notify("当前使用邀请码登录")}>登录方式 <span>邀请码 ›</span></button><button onClick={() => notify("照片仅用于生成你的专属效果图")}>照片与隐私 <span>已授权 ›</span></button><button className="logout-setting" onClick={() => void logout()}>退出登录 <span>→</span></button></div></section></div>
+          <div className="profile-lower-grid"><section className="profile-section"><div className="section-heading"><div><span className="micro-label">HISTORY · 30 DAYS</span><h3>最近记录</h3></div><Icon name="history" /></div>{history.length ? <div className="history-list">{history.map(item => <button key={item.id} onClick={() => replayHistory(item)}><span>{formatHistoryDate(item.createdAt)}</span><b>{item.scene}</b><p>{item.prompt}</p><i>›</i></button>)}</div> : <div className="profile-history-empty"><span><Icon name="history" /></span><b>还没有搭配记录</b><p>生成第一套推荐后，这里会保留最近 30 天的记录。</p><button onClick={() => setTab("home")}>去生成搭配</button></div>}</section><section className="profile-settings"><div className="section-heading"><div><h3>账户与偏好</h3><p>管理收藏、城市与隐私设置</p></div></div><div className="settings-list"><button onClick={() => setTab("saved")}>我的收藏 <span>{savedOutfits.length} 套 ›</span></button><button onClick={() => setShowWeather(true)}>常驻城市 <span>{city} ›</span></button><button onClick={() => notify(provider === "account" ? "当前使用账号登录" : "当前使用邀请码登录")}>登录方式 <span>{provider === "account" ? "账号" : "邀请码"} ›</span></button><button onClick={() => notify("照片仅用于生成你的专属效果图")}>照片与隐私 <span>已授权 ›</span></button><button className="logout-setting" onClick={() => void logout()}>退出登录 <span>→</span></button></div></section></div>
         </div>}
       </section>
 
@@ -1650,7 +1714,7 @@ function YidaApp() {
           <div className="personal-tryon-copy tryon-loading-copy">
             <span className="micro-label">FAST PREVIEW · UNDER 5S</span>
             <h3>{tryOnContext?.title || "你的今日穿搭"}</h3>
-            <p>先看人物与本次单品的真实速览。高清 AI 试穿仍在生成，完成后会在这里自动替换。</p>
+            <p>{modelProfile ? "先看人物与本次单品的速览。" : "先看本次单品的搭配速览。"}高清 AI 效果图仍在生成，完成后会在这里自动替换。</p>
             <div className="tryon-progress-line"><i /></div>
             <small className="tryon-background-note">可以关闭窗口继续浏览，不会中断生成。</small>
             <button onClick={closeTryOn}>先去逛逛</button>
@@ -1659,7 +1723,7 @@ function YidaApp() {
           <div className="tryon-person"><span /><i /></div>
           <span className="micro-label">PERSONAL LOOK GENERATION</span>
           <h3>{tryOnPhase === "recovering" ? "正在恢复上次的效果图" : "正在整理搭配速览"}</h3>
-          <p>{tryOnPhase === "recovering" ? "无需重新生成，LAYRA 正在读取上次已经提交的结果。" : "人物照和本次衣柜单品正在排版，通常一两秒就能先看到。"}</p>
+          <p>{tryOnPhase === "recovering" ? "无需重新生成，LAYRA 正在读取上次已经提交的结果。" : "本次衣柜单品正在排版，通常一两秒就能先看到。"}</p>
           <div className="tryon-progress-line"><i /></div>
         </div> : <>
           <div className={`personal-tryon-image ${showSwapModal ? "has-material-picker" : ""}`}>
@@ -1679,7 +1743,7 @@ function YidaApp() {
           <div className="personal-tryon-copy">
             <span className="micro-label">YOUR OUTFIT PREVIEW</span>
             <h3>{tryOnContext?.title || recommendations.find(item => item.id === selectedRecommendationId)?.title || "你的今日穿搭"}</h3>
-            <p>{recommendations.find(item => item.id === selectedRecommendationId)?.reason || "已根据你的全身照和本次衣柜单品生成。"}</p>
+            <p>{recommendations.find(item => item.id === selectedRecommendationId)?.reason || (modelProfile ? "已根据你的全身照和本次衣柜单品生成。" : "已根据本次衣柜单品生成不露脸假人效果图。")}</p>
             <div className="tryon-swap-shortcuts" aria-label="快速替换单品">{[["换鞋", "鞋履"], ["换外套", "外套"], ["换上衣", "上衣"], ["换下装", "下装"]].map(([label, category]) => <button type="button" key={category} onClick={() => openTryOnMaterials(category)}>{label}</button>)}</div>
             <div className="tryon-chat"><input aria-label="说出想替换的穿搭单品" value={tryOnChatInput} onChange={event => setTryOnChatInput(event.target.value)} onKeyDown={event => { if (event.key === "Enter" && !event.nativeEvent.isComposing) sendTryOnChat(); }} placeholder="边看边说：换鞋 / 换外套…" /><button onClick={sendTryOnChat}>发送</button></div>
             <p className="tryon-command-status" role="status" aria-live="polite">{showSwapModal ? `已在左侧展开 ${tryOnSwapCandidates.length} 件可替换${swapCategory}` : "说出要换的单品，LAYRA 会直接展开对应衣柜素材。"}</p>
@@ -1697,14 +1761,18 @@ function YidaApp() {
         {!uploadProcessing && <footer className="upload-modal-foot"><button className="secondary-upload" disabled={refinementPending || uploadSaving} onClick={() => openUploadPicker("append")}>{refinementPending ? "高清商品图生成中" : "＋ 继续添加"}</button><button className="primary-upload" disabled={refinementPending || uploadSaving || !garmentDrafts.some(item => item.selected)} onClick={saveGarmentDrafts}>{uploadSaving ? "正在加入衣柜…" : `加入衣柜（${garmentDrafts.filter(item => item.selected).length}）`}</button></footer>}
       </ModalFrame>}
 
-      {editingWardrobe && <ModalFrame onClose={() => setEditingWardrobe(null)} panelClassName="compact-modal wardrobe-edit-modal"><button className="modal-close" onClick={() => setEditingWardrobe(null)}>×</button><span className="micro-label">EDIT GARMENT</span><h3>修改衣物信息</h3><div className="edit-garment-preview transparent-grid"><img src={editingWardrobe.imageUrl} alt={editingWardrobe.name} onError={hideUnavailableImage} /></div><div className="profile-form"><label>衣物名称<input value={editingWardrobe.name} onChange={event => setEditingWardrobe({ ...editingWardrobe, name: event.target.value })} /></label><label>分类<select value={editingWardrobe.category} onChange={event => setEditingWardrobe({ ...editingWardrobe, category: event.target.value })}>{["上衣", "外套", "下装", "连衣裙", "鞋履", "配饰", "帽子"].map(value => <option key={value}>{value}</option>)}</select></label><label>颜色<input value={editingWardrobe.colorName} onChange={event => setEditingWardrobe({ ...editingWardrobe, colorName: event.target.value })} /></label><label>季节<select value={editingWardrobe.season} onChange={event => setEditingWardrobe({ ...editingWardrobe, season: event.target.value })}>{["四季", "春秋", "夏季", "冬季"].map(value => <option key={value}>{value}</option>)}</select></label><label>风格<select value={editingWardrobe.style} onChange={event => setEditingWardrobe({ ...editingWardrobe, style: event.target.value })}>{["简约", "通勤", "休闲", "运动", "复古", "甜酷"].map(value => <option key={value}>{value}</option>)}</select></label></div><div className="edit-ai-tags-wrap"><span className="micro-label">AI MATCHING TAGS</span><div className="edit-ai-tags">{garmentTagLabels(editingWardrobe.aiTags).map(tag => <span key={tag}>{tag}</span>)}<span>正式度 {editingWardrobe.aiTags.formality}/5</span><span>保暖度 {editingWardrobe.aiTags.warmth}/5</span></div><small>用于天气、场合、层次与风格筛选，后续由搭配模型综合评分。</small></div><button className="primary-modal-button" onClick={() => updateWardrobeItem(editingWardrobe.id, editingWardrobe)}>保存修改</button></ModalFrame>}
+      {editingWardrobe && <ModalFrame onClose={() => setEditingWardrobe(null)} panelClassName="compact-modal wardrobe-edit-modal"><button className="modal-close" onClick={() => setEditingWardrobe(null)}>×</button><span className="micro-label">EDIT GARMENT</span><h3>修改衣物信息</h3><div className="edit-garment-preview transparent-grid"><img src={editingWardrobe.imageUrl} alt={editingWardrobe.name} /></div><div className="profile-form"><label>衣物名称<input value={editingWardrobe.name} onChange={event => setEditingWardrobe({ ...editingWardrobe, name: event.target.value })} /></label><label>分类<select value={editingWardrobe.category} onChange={event => setEditingWardrobe({ ...editingWardrobe, category: event.target.value })}>{["上衣", "外套", "下装", "连衣裙", "鞋履", "配饰", "帽子"].map(value => <option key={value}>{value}</option>)}</select></label><label>颜色<input value={editingWardrobe.colorName} onChange={event => setEditingWardrobe({ ...editingWardrobe, colorName: event.target.value })} /></label><label>季节<select value={editingWardrobe.season} onChange={event => setEditingWardrobe({ ...editingWardrobe, season: event.target.value })}>{["四季", "春秋", "夏季", "冬季"].map(value => <option key={value}>{value}</option>)}</select></label><label>风格<select value={editingWardrobe.style} onChange={event => setEditingWardrobe({ ...editingWardrobe, style: event.target.value })}>{["简约", "通勤", "休闲", "运动", "复古", "甜酷"].map(value => <option key={value}>{value}</option>)}</select></label></div><div className="profile-form garment-attribute-form"><label>材质<input value={editingWardrobe.aiTags.material} maxLength={16} onChange={event => setEditingWardrobe({ ...editingWardrobe, aiTags: { ...editingWardrobe.aiTags, material: event.target.value } })} /></label><label>图案<input value={editingWardrobe.aiTags.pattern} maxLength={16} onChange={event => setEditingWardrobe({ ...editingWardrobe, aiTags: { ...editingWardrobe.aiTags, pattern: event.target.value } })} /></label></div><OccasionEditor value={editingWardrobe.aiTags.occasions} onChange={occasions => setEditingWardrobe({ ...editingWardrobe, aiTags: { ...editingWardrobe.aiTags, occasions } })} /><div className="edit-ai-tags-wrap"><span className="micro-label">AI MATCHING TAGS</span><div className="edit-ai-tags">{garmentTagLabels(editingWardrobe.aiTags).map(tag => <span key={tag}>{tag}</span>)}<span>正式度 {editingWardrobe.aiTags.formality}/5</span><span>保暖度 {editingWardrobe.aiTags.warmth}/5</span></div><small>用于天气、场合、层次与风格筛选，后续由搭配模型综合评分。</small></div><button className="primary-modal-button" onClick={() => updateWardrobeItem(editingWardrobe.id, editingWardrobe)}>保存修改</button></ModalFrame>}
 
-      {showWeather && <ModalFrame onClose={() => setShowWeather(false)} panelClassName="compact-modal"><button className="modal-close" onClick={() => setShowWeather(false)}>×</button><span className="micro-label">WEATHER & LOCATION</span><h3>天气与城市</h3><p>允许定位后会自动获取当前位置；拒绝定位时使用常驻城市。天气会在后台参与搭配，不需要重复填写。</p><button className="location-button" onClick={locateWeather}>⌖ 允许定位并获取天气</button><div className="city-grid">{["杭州", "上海", "北京", "广州", "深圳", "成都"].map(item => <button key={item} className={city === item ? "active" : ""} onClick={() => { setCity(item); setShowWeather(false); notify(`常驻城市已设为${item}`); }}>{item}</button>)}</div></ModalFrame>}
+      {showWeather && <ModalFrame onClose={() => setShowWeather(false)} panelClassName="compact-modal"><button className="modal-close" onClick={() => setShowWeather(false)}>×</button><span className="micro-label">WEATHER & LOCATION</span><h3>天气与城市</h3><p>点击后才会申请定位；也可以搜索任意城市。选定的城市会参与后续搭配。</p><button className="location-button" onClick={locateWeather}>⌖ 使用我的当前位置</button><form className="city-search" onSubmit={searchWeatherCity}><input aria-label="搜索城市" placeholder="输入城市，例如：苏州" value={weatherCityInput} onChange={event => setWeatherCityInput(event.target.value)} maxLength={40} /><button type="submit" disabled={weatherSearching || !weatherCityInput.trim()}>{weatherSearching ? "查询中…" : "查询"}</button></form><div className="city-grid">{["杭州", "上海", "北京", "广州", "深圳", "成都"].map(item => <button key={item} className={city === item ? "active" : ""} onClick={() => { localStorage.removeItem("yida:location"); setLocationCoords(null); setCity(item); setShowWeather(false); notify(`常驻城市已设为${item}`); }}>{item}</button>)}</div></ModalFrame>}
 
       {showProfileEdit && <ModalFrame onClose={() => setShowProfileEdit(false)} panelClassName="compact-modal profile-edit-modal"><button className="modal-close" onClick={() => setShowProfileEdit(false)}>×</button><span className="micro-label">EDIT PROFILE</span><h3>编辑个人信息</h3><div className="profile-form"><label>昵称<input value={profile.nickname} onChange={event => setProfile(value => ({ ...value, nickname: event.target.value }))} /></label><label>性别<select value={profile.gender} onChange={event => setProfile(value => ({ ...value, gender: event.target.value }))}><option>女</option><option>男</option><option>其他</option></select></label><label>身高（cm）<input value={profile.height} onChange={event => setProfile(value => ({ ...value, height: event.target.value }))} /></label><label>体重（kg）<input value={profile.weight} onChange={event => setProfile(value => ({ ...value, weight: event.target.value }))} /></label><label>身材比例<select value={profile.bodyType} onChange={event => setProfile(value => ({ ...value, bodyType: event.target.value }))}><option>直筒型</option><option>梨形</option><option>苹果型</option><option>沙漏型</option><option>倒三角</option></select></label></div><button className="optional-photo" onClick={() => modelFileRef.current?.click()}>＋ {modelProfile ? "更换个人全身照" : "上传个人全身照"}</button><button className="primary-modal-button" onClick={() => { saveProfile(profile, stylePrefs); setShowProfileEdit(false); notify("个人信息已保存"); }}>保存资料</button></ModalFrame>}
       {toast && <div className="toast"><Icon name="check" /> {toast}</div>}
     </main>
   );
+}
+
+function OccasionEditor({ value, onChange, disabled = false }: { value: string[]; onChange: (value: string[]) => void; disabled?: boolean }) {
+  return <fieldset className="occasion-editor" disabled={disabled}><legend>适用场景（最多 5 项）</legend><div>{garmentOccasions.map(sceneName => <label key={sceneName}><input type="checkbox" checked={value.includes(sceneName)} disabled={disabled || (!value.includes(sceneName) && value.length >= 5)} onChange={() => onChange(value.includes(sceneName) ? value.filter(item => item !== sceneName) : [...value, sceneName])} />{sceneName}</label>)}</div></fieldset>;
 }
 
 function GarmentDraftCard({
@@ -1773,7 +1841,10 @@ function GarmentDraftCard({
     <div className="draft-fields">
       <label>分类<select disabled={generating} value={draft.category} onChange={event => onUpdate({ category: event.target.value })}>{["待识别", "上衣", "外套", "下装", "连衣裙", "鞋履", "配饰", "帽子"].map(value => <option key={value}>{value}</option>)}</select></label>
       <label>季节<select disabled={generating} value={draft.season} onChange={event => onUpdate({ season: event.target.value })}>{["四季", "春秋", "夏季", "冬季"].map(value => <option key={value}>{value}</option>)}</select></label>
+      <label>材质<input disabled={generating} value={draft.aiTags.material} maxLength={16} onChange={event => onUpdate({ aiTags: { ...draft.aiTags, material: event.target.value } })} /></label>
+      <label>图案<input disabled={generating} value={draft.aiTags.pattern} maxLength={16} onChange={event => onUpdate({ aiTags: { ...draft.aiTags, pattern: event.target.value } })} /></label>
     </div>
+    <OccasionEditor value={draft.aiTags.occasions} disabled={generating} onChange={occasions => onUpdate({ aiTags: { ...draft.aiTags, occasions } })} />
     <div className="recognized-tags">
       <span><i style={{ background: draft.colorHex }} />{draft.colorName}</span>
       {garmentTagLabels(draft.aiTags).slice(0, 4).map(tag => <span key={tag}>{tag}</span>)}
@@ -1793,21 +1864,39 @@ function Thinking({ phase }: { phase: TaskPhase }) {
   return <section className="ai-thinking" aria-live="polite"><div className="scan-stage"><span className="scan-ring ring-a" /><span className="scan-ring ring-b" /><div className="scan-clothes">{garments.slice(0, 4).map(item => <GarmentArt key={item.id} color={item.color} mini />)}</div><span className="scan-line" /></div><div className="thinking-copy"><span>AI STYLING IN PROGRESS</span><b>{message}</b><i><em /></i></div></section>;
 }
 
-function Results({ scene, scope, recommendations, intent, selectedId, setSelectedId, generateLooks, generateTryOn, modelReady, openModelUpload, tryOnLoading, weather, chatMessages, chatInput, setChatInput, sendChat, chatTyping }: {
+function Results({ scene, scope, recommendations, intent, selectedId, setSelectedId, generateLooks, generateTryOn, modelReady, tryOnLoading, weather, savedOutfits, feedback, onSave, onFeedback, chatMessages, chatInput, setChatInput, sendChat, chatTyping }: {
   scene: Scene; scope: Scope; recommendations: OutfitRecommendation[]; intent: OutfitIntent | null; selectedId: string | null; setSelectedId: (id: string) => void;
-  generateLooks: () => void; generateTryOn: () => void; modelReady: boolean; openModelUpload: () => void; tryOnLoading: boolean; weather: WeatherContext;
+  generateLooks: () => void; generateTryOn: () => void; modelReady: boolean; tryOnLoading: boolean; weather: WeatherContext;
+  savedOutfits: SavedOutfit[]; feedback: OutfitFeedback[];
+  onSave: (recommendation: OutfitRecommendation) => void;
+  onFeedback: (recommendation: OutfitRecommendation, action: OutfitFeedback["action"]) => void;
   chatMessages: ChatMessage[]; chatInput: string; setChatInput: (value: string) => void; sendChat: () => void; chatTyping: boolean;
 }) {
+  const disliked = new Set(feedback.filter(item => item.action === "dislike").map(item => item.coreKey));
+  const worn = new Set(feedback.filter(item => item.action === "worn").map(item => item.coreKey));
+  const visible = recommendations.filter(look => !disliked.has(outfitCoreKey(look.items)));
+  const savedKeys = new Set(savedOutfits.map(item => [...item.itemIds].sort().join("|")));
   return <section className="results-section dynamic-results">
-    <div className="section-heading"><div><span className="micro-label">TODAY&apos;S EDIT</span><h3>{scene}的三套衣柜方案</h3></div><button onClick={generateLooks}>换一批</button></div>
+    <div className="section-heading"><div><span className="micro-label">TODAY&apos;S EDIT</span><h3>{scene}的{visible.length}套衣柜方案</h3></div><button onClick={generateLooks}>换一批</button></div>
     <p className="result-context">{scope} · {weather.city} {weather.temperature}° / {weather.condition}{(intent?.styles || intent?.style)?.length ? ` · ${(intent?.styles || intent?.style || []).join("、")}` : ""}{intent?.intensity ? ` · ${intent.intensity}` : ""}</p>
-    <div className="outfit-list">{recommendations.map((look, index) => <button type="button" className={`real-outfit-card ${selectedId === look.id ? "active" : ""}`} key={look.id} aria-pressed={selectedId === look.id} onClick={() => setSelectedId(look.id)}>
-      <div className="real-look-top"><span>LOOK 0{index + 1}</span><b>{look.score}<small>分</small></b></div>
-      <div className="real-outfit-board">{look.items.map(item => <figure key={item.id}><img src={item.imageUrl} alt={item.name} onError={hideUnavailableImage} /><figcaption>{item.category}</figcaption></figure>)}</div>
-      <div className="real-look-copy"><h4>{look.title}</h4><p>{look.reason}</p><div>{(look.highlights || []).map(tag => <span key={tag}>{tag}</span>)}</div>{look.missingSuggestion && <small>可选添置：{look.missingSuggestion}</small>}</div>
-      <span className="real-look-select">{selectedId === look.id ? "✓ 已选择" : "选择这套"}</span>
-    </button>)}</div>
-    <button className="model-button" disabled={!selectedId} onClick={() => { if (modelReady) generateTryOn(); else openModelUpload(); }}>{!selectedId ? "先选择一套喜欢的穿搭" : tryOnLoading ? "查看搭配速览（高清生成中）" : modelReady ? "用我的全身照生成效果图" : "上传全身照后生成效果图"}</button>
+    {visible.length ? <div className="outfit-list">{visible.map((look, index) => {
+      const coreKey = outfitCoreKey(look.items);
+      const saved = savedKeys.has([...look.itemIds].sort().join("|"));
+      return <article className={`real-outfit-card ${selectedId === look.id ? "active" : ""}`} key={look.id}>
+        <button type="button" className="real-outfit-main" aria-pressed={selectedId === look.id} onClick={() => setSelectedId(look.id)}>
+          <div className="real-look-top"><span>LOOK 0{index + 1}</span><b>{look.score}<small>分</small></b></div>
+          <div className="real-outfit-board">{look.items.map(item => <figure key={item.id}><img src={item.imageUrl} alt={item.name} onError={hideUnavailableImage} /><figcaption>{item.category}</figcaption></figure>)}</div>
+          <div className="real-look-copy"><h4>{look.title}</h4><p>{look.reason}</p><div>{(look.highlights || []).map(tag => <span key={tag}>{tag}</span>)}</div>{look.missingSuggestion && <small>可选添置：{look.missingSuggestion}</small>}</div>
+          <span className="real-look-select">{selectedId === look.id ? "✓ 已选择" : "选择这套"}</span>
+        </button>
+        <div className="outfit-feedback-actions">
+          <button type="button" onClick={() => onFeedback(look, "dislike")}>不适合我</button>
+          <button type="button" disabled={worn.has(coreKey)} onClick={() => onFeedback(look, "worn")}>{worn.has(coreKey) ? "✓ 已穿" : "今天穿这套"}</button>
+          <button type="button" disabled={saved} onClick={() => onSave(look)}>{saved ? "♥ 已收藏" : "♡ 收藏"}</button>
+        </div>
+      </article>;
+    })}</div> : <p className="outfit-empty">不同的核心搭配已看完。可以添加新的上衣、下装或外套，再生成一批。</p>}
+    <button className="model-button" disabled={!selectedId || !visible.some(look => look.id === selectedId)} onClick={() => generateTryOn()}>{!selectedId ? "先选择一套喜欢的穿搭" : tryOnLoading ? "查看搭配速览（高清生成中）" : modelReady ? "用我的全身照生成效果图" : "生成不露脸假人效果图"}</button>
     <section className="chat-assistant"><div className="chat-title"><span><Icon name="spark" /></span><div><b>继续和 LAYRA 聊</b><small>可以持续调整颜色、单品与正式程度</small></div></div><div className="chat-messages">{chatMessages.map((message, index) => <p key={`${message.role}-${index}`} className={message.role}>{message.text}</p>)}{chatTyping && <p className="assistant typing">正在想…</p>}</div><div className="chat-quick">{["换双鞋", "更正式一点", "颜色再克制些"].map(item => <button key={item} onClick={() => setChatInput(item)}>{item}</button>)}</div><div className="chat-input"><input value={chatInput} onChange={event => setChatInput(event.target.value)} onKeyDown={event => { if (event.key === "Enter") sendChat(); }} placeholder="例如：用这件外套重新搭一套" /><button onClick={sendChat}>发送</button></div></section>
   </section>;
 }
